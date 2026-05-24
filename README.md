@@ -303,7 +303,7 @@ See the [SECURITY](#security-notes) section of the source for the full threat mo
 ## Development
 
 ```bash
-git clone https://github.com/omarnassar/claude-pin
+git clone https://github.com/OmarNassar1127/claude-pin
 cd claude-pin
 npm link             # exposes cpin from your working copy
 cpin install         # symlinks the in-development skills into ~/.claude/skills

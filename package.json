@@ -13,17 +13,17 @@
     "cli",
     "plugin"
   ],
-  "homepage": "https://github.com/omarnassar/claude-pin#readme",
+  "homepage": "https://github.com/OmarNassar1127/claude-pin#readme",
   "bugs": {
-    "url": "https://github.com/omarnassar/claude-pin/issues"
+    "url": "https://github.com/OmarNassar1127/claude-pin/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/omarnassar/claude-pin.git"
+    "url": "git+https://github.com/OmarNassar1127/claude-pin.git"
   },
   "author": {
     "name": "Omar Nassar",
-    "email": "omar@vloto.nl"
+    "email": "omar.portero.nassar1@gmail.com"
   },
   "license": "MIT",
   "bin": {
