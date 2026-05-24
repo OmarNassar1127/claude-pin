@@ -1,0 +1,8 @@
+{
+  "name": "claude-pin",
+  "description": "Pin Claude Code sessions so they survive the resume window. Adds /claude-pin:pin, /claude-pin:unpin, /claude-pin:pins and the cpin CLI for an fzf-style picker that resumes pinned sessions directly by id.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Omar Nassar"
+  }
+}

@@ -1,0 +1,488 @@
+#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawnSync, spawn } = require('child_process');
+
+const store = require('../lib/store');
+const session = require('../lib/session');
+const settings = require('../lib/settings');
+
+const C = {
+  reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
+  red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m',
+  cyan: '\x1b[36m', gray: '\x1b[90m',
+};
+const supportsColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const c = (code, s) => supportsColor ? `${code}${s}${C.reset}` : s;
+
+function parseArgs(argv) {
+  const out = { _: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      if (eq !== -1) { out[a.slice(2, eq)] = a.slice(eq + 1); }
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { out[a.slice(2)] = argv[++i]; }
+      else { out[a.slice(2)] = true; }
+    } else {
+      out._.push(a);
+    }
+  }
+  return out;
+}
+
+function relTime(iso) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
+  return `${Math.floor(diff / 86400 / 30)}mo ago`;
+}
+
+function shortenCwd(cwd) {
+  const home = os.homedir();
+  return cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function assertValidId(id) {
+  if (!UUID_RE.test(id)) throw new Error(`Refusing to act on non-UUID session id: ${JSON.stringify(id).slice(0, 80)}`);
+}
+
+function sanitize(raw, max = 200) {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').trim();
+  if (!cleaned) return null;
+  return cleaned.slice(0, max);
+}
+const sanitizeName = sanitize;
+
+function metaLine(p) {
+  const touched = session.lastActivity(p);
+  const parts = [shortenCwd(p.cwd), 'pinned ' + relTime(p.pinned_at)];
+  if (touched) parts.push('last ' + relTime(new Date(touched).toISOString()));
+  return parts.join(' · ');
+}
+
+function displayName(pin) {
+  return session.liveTitle(pin) || pin.name || null;
+}
+
+function cmdPin(args) {
+  const id = args._[0] || args.session || session.mostRecentSessionId(process.cwd());
+  if (!id) {
+    console.error(c(C.red, 'No session id given and none could be inferred from cwd.'));
+    process.exit(1);
+  }
+  assertValidId(id);
+  const cwd = args.cwd || process.cwd();
+  const found = session.findAnySessionFile(id);
+  if (!found && !session.sessionExists(cwd, id)) {
+    console.error(c(C.yellow, `Warning: no transcript found on disk for ${id}. Pinning anyway.`));
+  }
+  let explicit = args.name || (typeof args._[1] === 'string' ? args._.slice(1).join(' ') : '');
+  if (args['name-from-stdin']) {
+    explicit = fs.readFileSync(0, 'utf8');
+  }
+  const resolvedCwd = found?.cwd || cwd;
+  const fallback = session.readSessionTitle(session.sessionFilePath(resolvedCwd, id));
+  const pin = {
+    id,
+    name: sanitizeName(explicit) || sanitizeName(fallback) || null,
+    cwd: resolvedCwd,
+    note: sanitizeName(args.note),
+    pinned_at: new Date().toISOString(),
+  };
+  store.add(pin);
+  const ret = settings.currentRetentionDays();
+  console.log(c(C.green, '✓') + ` pinned ${c(C.bold, pin.name || id.slice(0, 8))} ${c(C.gray, '· ' + shortenCwd(pin.cwd))}`);
+  if (typeof ret !== 'number' || ret < 365) {
+    console.log(c(C.yellow, `! cleanupPeriodDays is ${ret ?? 'default (30)'} — pinned transcripts may still be deleted.`));
+    console.log(c(C.dim, `  Run "cpin doctor" to bump it to ${settings.SAFE_RETENTION_DAYS} days.`));
+  }
+}
+
+function cmdNote(args) {
+  const id = args._[0] || args.session || session.mostRecentSessionId(process.cwd());
+  if (!id) { console.error(c(C.red, 'No session id given.')); process.exit(1); }
+  assertValidId(id);
+  let text = args.text;
+  if (args['text-from-stdin']) text = fs.readFileSync(0, 'utf8');
+  const clean = sanitize(text, 1000);
+  const data = store.load();
+  const pin = data.pins.find(p => p.id === id);
+  if (!pin) {
+    console.error(c(C.yellow, `Not pinned (${id.slice(0, 8)}). Run /pin first, then /note.`));
+    process.exit(1);
+  }
+  pin.note = clean;
+  store.save(data);
+  if (clean) console.log(c(C.green, '✓') + ` note set for ${displayName(pin) || id.slice(0, 8)}: ${c(C.cyan, clean)}`);
+  else console.log(c(C.green, '✓') + ` note cleared for ${displayName(pin) || id.slice(0, 8)}`);
+}
+
+function cmdUnpin(args) {
+  const id = args._[0] || args.session || session.mostRecentSessionId(process.cwd());
+  if (!id) { console.error(c(C.red, 'No session id given.')); process.exit(1); }
+  assertValidId(id);
+  const removed = store.remove(id);
+  if (removed) console.log(c(C.green, '✓') + ` unpinned ${id.slice(0, 8)}`);
+  else console.log(c(C.gray, `(no pin found for ${id.slice(0, 8)})`));
+}
+
+function plainList(pins) {
+  for (const p of pins) {
+    const name = displayName(p) || c(C.gray, '(unnamed)');
+    const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
+    const marker = exists ? c(C.green, '●') : c(C.red, '✗');
+    console.log(`${marker} ${c(C.bold, name)} ${c(C.gray, p.id.slice(0, 8))}`);
+    console.log(`  ${c(C.dim, metaLine(p))}`);
+    if (p.note) console.log(`  ${c(C.cyan, '› ' + p.note)}`);
+  }
+}
+
+function resumeAndExit(pin) {
+  assertValidId(pin.id);
+  if (!fs.existsSync(pin.cwd)) {
+    console.error(c(C.red, `Refusing to resume: cwd does not exist: ${pin.cwd}`));
+    process.exit(1);
+  }
+  const name = displayName(pin) || pin.id.slice(0, 8);
+  console.log(c(C.green, '▶') + ` resuming ${c(C.bold, name)} ${c(C.gray, 'in ' + shortenCwd(pin.cwd))}`);
+  const child = spawn('claude', ['--resume', pin.id], { cwd: pin.cwd, stdio: 'inherit' });
+  child.on('exit', code => process.exit(code ?? 0));
+}
+
+function fzfInteractive(pins) {
+  const lines = pins.map(p => {
+    const name = displayName(p) || '(unnamed)';
+    const summary = session.readSummary(session.sessionFilePath(p.cwd, p.id)) || '';
+    return [p.id, name, shortenCwd(p.cwd), relTime(p.pinned_at), summary].join('\t');
+  });
+  const res = spawnSync('fzf', [
+    '--with-nth=2..',
+    '--delimiter=\t',
+    '--prompt=pinned ▸ ',
+    '--header=enter: resume  ·  ctrl-d: unpin  ·  esc: quit',
+    '--expect=ctrl-d',
+    '--height=40%',
+    '--reverse',
+  ], { input: lines.join('\n'), stdio: ['pipe', 'pipe', 'inherit'], encoding: 'utf8' });
+  if (res.status === 130 || !res.stdout) return;
+  const [pressed, selected] = res.stdout.split('\n');
+  if (!selected) return;
+  const id = selected.split('\t')[0];
+  const pin = pins.find(p => p.id === id);
+  if (!pin) return;
+  if (pressed === 'ctrl-d') {
+    store.remove(pin.id);
+    console.log(c(C.green, '✓') + ` unpinned ${displayName(pin) || pin.id.slice(0, 8)}`);
+    const remaining = store.list();
+    if (remaining.length) return fzfInteractive(remaining.sort((a, b) => new Date(b.pinned_at) - new Date(a.pinned_at)));
+    return;
+  }
+  resumeAndExit(pin);
+}
+
+function nodeTui(initialPins) {
+  return new Promise((resolve) => {
+    let pins = [...initialPins];
+    let cursor = -1;
+    let selectedId = null;
+    let inSearch = false;
+    let query = '';
+    let cleaned = false;
+
+    const enterScreen = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
+    const exitScreen = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+
+    const getVisible = () => {
+      if (!query) return pins;
+      const q = query.toLowerCase();
+      return pins.filter(p => {
+        const hay = [displayName(p) || '', p.note || '', p.cwd || ''].join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+    };
+
+    const render = () => {
+      process.stdout.write('\x1b[2J\x1b[H');
+      const visible = getVisible();
+      let hint;
+      if (inSearch) hint = 'type to filter · enter: apply · esc: clear';
+      else if (selectedId === null) hint = '↑/↓ navigate · space: select · /: search · d: unpin · q: quit';
+      else hint = 'enter: resume · space: deselect · /: search · ↑/↓ · d · q';
+      process.stdout.write(c(C.bold, 'claude-pin') + c(C.dim, '   ' + hint) + '\n');
+      if (inSearch || query) {
+        const caret = inSearch ? c(C.cyan, '▏') : '';
+        process.stdout.write(c(C.dim, '  search: ') + query + caret + '\n');
+      }
+      process.stdout.write('\n');
+      if (!visible.length) {
+        process.stdout.write(c(C.gray, '  (no matches)\n'));
+        return;
+      }
+      visible.forEach((p, i) => {
+        const focused = i === cursor;
+        const selected = p.id === selectedId;
+        const prefix = focused ? c(C.cyan, '▸ ') : '  ';
+        const rawName = displayName(p) || '(unnamed)';
+        const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
+        const dot = selected ? (exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
+        const name = focused ? c(C.bold, rawName) : rawName;
+        const idStr = c(C.gray, p.id.slice(0, 8));
+        process.stdout.write(`${prefix}${dot} ${name} ${idStr}\n    ${c(C.dim, metaLine(p))}\n`);
+        if (p.note) process.stdout.write(`    ${c(C.cyan, '› ' + p.note)}\n`);
+      });
+    };
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdin.removeListener('data', onKey);
+      exitScreen();
+    };
+    process.on('exit', cleanup);
+    process.on('SIGINT', () => { cleanup(); process.exit(130); });
+    process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+
+    const onKey = (chunk) => {
+      const k = chunk.toString();
+      if (k === '\x03') { cleanup(); resolve(); return; }
+
+      if (inSearch) {
+        if (k === '\x1b') { query = ''; inSearch = false; cursor = -1; render(); return; }
+        if (k === '\r' || k === '\n') {
+          inSearch = false;
+          if (getVisible().length && cursor === -1) cursor = 0;
+          render(); return;
+        }
+        if (k === '\x7f' || k === '\x08') { query = query.slice(0, -1); cursor = -1; render(); return; }
+        if (/^[\x20-\x7e]+$/.test(k)) { query += k; cursor = -1; render(); return; }
+        return;
+      }
+
+      if (k === 'q' || k === '\x1b') { cleanup(); resolve(); return; }
+      if (k === '/') { inSearch = true; render(); return; }
+
+      const visible = getVisible();
+      if (k === '\x1b[A' || k === '\x1bOA' || k === 'k') {
+        if (!visible.length) return;
+        cursor = cursor === -1 ? visible.length - 1 : Math.max(0, cursor - 1);
+        render(); return;
+      }
+      if (k === '\x1b[B' || k === '\x1bOB' || k === 'j') {
+        if (!visible.length) return;
+        cursor = cursor === -1 ? 0 : Math.min(visible.length - 1, cursor + 1);
+        render(); return;
+      }
+      if (k === ' ') {
+        if (cursor === -1 || !visible[cursor]) return;
+        const focusedPin = visible[cursor];
+        selectedId = (selectedId === focusedPin.id) ? null : focusedPin.id;
+        render(); return;
+      }
+      if (k === '\r' || k === '\n') {
+        if (selectedId === null) return;
+        const chosen = pins.find(p => p.id === selectedId);
+        if (!chosen) return;
+        cleanup();
+        process.stdout.write('\n');
+        resumeAndExit(chosen);
+        return;
+      }
+      if (k === 'd' || k === 'x') {
+        if (cursor === -1 || !visible[cursor]) return;
+        const target = visible[cursor];
+        store.remove(target.id);
+        if (selectedId === target.id) selectedId = null;
+        pins = pins.filter(p => p.id !== target.id);
+        const newVisible = getVisible();
+        if (!pins.length) { cleanup(); process.stdout.write('\n' + c(C.gray, 'No pins left.\n')); resolve(); return; }
+        if (!newVisible.length) cursor = -1;
+        else if (cursor >= newVisible.length) cursor = newVisible.length - 1;
+        render();
+      }
+    };
+
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onKey);
+    enterScreen();
+    render();
+  });
+}
+
+function cmdList(args) {
+  const pins = store.list();
+  if (!pins.length) {
+    console.log(c(C.gray, 'No pinned sessions yet. Use /pin inside a session, or `cpin pin <id>`.'));
+    return;
+  }
+  pins.sort((a, b) => new Date(b.pinned_at) - new Date(a.pinned_at));
+  if (args.plain || !process.stdout.isTTY) return plainList(pins);
+  if (fzfAvailable()) return fzfInteractive(pins);
+  return nodeTui(pins);
+}
+
+function fzfAvailable() {
+  const r = spawnSync('which', ['fzf'], { stdio: 'ignore' });
+  return r.status === 0;
+}
+
+function cmdPick(args) {
+  return cmdList(args);
+}
+
+function cmdPrune() {
+  const data = store.load();
+  const kept = [];
+  const dropped = [];
+  for (const p of data.pins) {
+    if (session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id)) kept.push(p);
+    else dropped.push(p);
+  }
+  data.pins = kept;
+  store.save(data);
+  if (!dropped.length) console.log(c(C.gray, 'Nothing to prune.'));
+  else {
+    console.log(c(C.yellow, `Pruned ${dropped.length} pin(s) with missing transcripts:`));
+    dropped.forEach(p => console.log(`  - ${p.name || '(unnamed)'} ${c(C.gray, p.id.slice(0, 8))}`));
+  }
+}
+
+const SKILL_NAMES = ['pin', 'unpin', 'pins', 'note'];
+
+function repoRoot() {
+  return path.resolve(fs.realpathSync(__filename), '..', '..');
+}
+
+function cmdInstall(args) {
+  const repo = repoRoot();
+  const dir = path.join(os.homedir(), '.claude', 'skills');
+  fs.mkdirSync(dir, { recursive: true });
+
+  let conflicts = 0;
+  for (const n of SKILL_NAMES) {
+    const src = path.join(repo, 'skills', n);
+    const dst = path.join(dir, n);
+    if (fs.existsSync(dst)) {
+      const isLink = fs.lstatSync(dst).isSymbolicLink();
+      const linksHere = isLink && fs.readlinkSync(dst) === src;
+      if (linksHere) { console.log(`  ${c(C.gray, '·')} /${n}  ${c(C.gray, '→ already linked')}`); continue; }
+      if (!args.force) {
+        console.log(`  ${c(C.red, '✗')} /${n}  ${c(C.red, '(exists, use --force to replace)')}`);
+        conflicts++;
+        continue;
+      }
+      fs.rmSync(dst, { recursive: true, force: true });
+    }
+    fs.symlinkSync(src, dst, 'dir');
+    console.log(`  ${c(C.green, '✓')} /${n}  ${c(C.gray, '→ ' + dst.replace(os.homedir(), '~'))}`);
+  }
+
+  const which = spawnSync('which', ['cpin'], { encoding: 'utf8' });
+  console.log('');
+  if (which.status === 0) {
+    console.log(c(C.green, '✓') + ' cpin on PATH: ' + which.stdout.trim());
+  } else {
+    console.log(c(C.yellow, '!') + ' cpin is not on your shell PATH yet — the slash commands need it.');
+    console.log(c(C.bold, `    cd ${repo} && npm link`));
+  }
+
+  const ret = settings.currentRetentionDays();
+  if (typeof ret !== 'number' || ret < 365) {
+    console.log(c(C.yellow, '!') + ' cleanupPeriodDays is at default (30) — transcripts will be deleted.');
+    console.log(c(C.bold, '    cpin doctor --fix'));
+  }
+
+  if (conflicts) process.exit(1);
+  console.log(c(C.dim, '\n  Open any Claude Code session and try /pin'));
+}
+
+function cmdUninstall() {
+  const dir = path.join(os.homedir(), '.claude', 'skills');
+  for (const n of SKILL_NAMES) {
+    const dst = path.join(dir, n);
+    if (!fs.existsSync(dst)) { console.log(`  ${c(C.gray, '·')} /${n}  (not present)`); continue; }
+    if (fs.lstatSync(dst).isSymbolicLink()) {
+      fs.unlinkSync(dst);
+      console.log(`  ${c(C.green, '✓')} /${n}  (symlink removed)`);
+    } else {
+      console.log(`  ${c(C.yellow, '!')} /${n}  (not a symlink — not removing)`);
+    }
+  }
+}
+
+function cmdDoctor(args) {
+  console.log(c(C.bold, 'claude-pin doctor'));
+  console.log(`  store: ${store.storePath()}`);
+  console.log(`  pins:  ${store.list().length}`);
+  const ret = settings.currentRetentionDays();
+  console.log(`  cleanupPeriodDays: ${ret ?? c(C.yellow, 'default (30)')}`);
+  if (typeof ret === 'number' && ret >= 365) {
+    console.log(c(C.green, '  ✓ transcripts will survive long enough for pinning to be useful.'));
+    return;
+  }
+  if (args.fix || args.yes) {
+    const r = settings.ensureSafeRetention();
+    console.log(c(C.green, `  ✓ set cleanupPeriodDays to ${r.current} (was ${r.previous ?? 'default'}).`));
+    return;
+  }
+  console.log(c(C.yellow, `  ! transcripts are deleted after ${ret ?? 30} days. Pinned sessions can vanish.`));
+  console.log(c(C.dim, `    Run "cpin doctor --fix" to set cleanupPeriodDays to ${settings.SAFE_RETENTION_DAYS}.`));
+}
+
+function help() {
+  console.log(`${c(C.bold, 'cpin')} — pin Claude Code sessions so they survive the resume window.
+
+${c(C.bold, 'Setup:')}
+  cpin install [--force]     Symlink /pin /unpin /pins into ~/.claude/skills
+  cpin uninstall             Remove the symlinks
+  cpin doctor [--fix]        Check setup; --fix bumps cleanupPeriodDays
+
+${c(C.bold, 'Usage:')}
+  cpin                       Interactive picker (↑↓ · enter resume · d unpin · q quit)
+  cpin list                  Same as above; --plain for static output
+  cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
+  cpin unpin [id]            Unpin (defaults to most recent in cwd)
+  cpin note <id> --text X    Set/clear a free-text note on a pin
+  cpin prune                 Drop pins whose transcript is gone
+  cpin help                  This message
+`);
+}
+
+const cmds = {
+  install: cmdInstall, uninstall: cmdUninstall,
+  pin: cmdPin, 'pin-current': cmdPin,
+  unpin: cmdUnpin, 'unpin-current': cmdUnpin,
+  note: cmdNote,
+  list: cmdList, ls: cmdList,
+  pick: cmdPick, resume: cmdPick,
+  prune: cmdPrune,
+  doctor: cmdDoctor,
+  help, '--help': help, '-h': help,
+};
+
+const [, , cmd, ...rest] = process.argv;
+const argv = parseArgs(rest);
+try {
+  if (!cmd) {
+    cmdList(parseArgs([]));
+  } else {
+    const handler = cmds[cmd];
+    if (!handler) {
+      console.error(c(C.red, `Unknown command: ${cmd}`));
+      help();
+      process.exit(1);
+    }
+    handler(argv);
+  }
+} catch (err) {
+  console.error(c(C.red, 'Error: ') + err.message);
+  process.exit(1);
+}
