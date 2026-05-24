@@ -208,34 +208,36 @@ function nodeTui(initialPins) {
     };
 
     const render = () => {
-      process.stdout.write('\x1b[2J\x1b[H');
       const visible = getVisible();
       let hint;
       if (inSearch) hint = 'type to filter · enter: apply · esc: clear';
       else if (selectedId === null) hint = '↑/↓ navigate · space: select · /: search · d: unpin · q: quit';
       else hint = 'enter: resume · space: deselect · /: search · ↑/↓ · d · q';
-      process.stdout.write(c(C.bold, 'claude-pin') + c(C.dim, '   ' + hint) + '\n');
+      let out = '\x1b[H';
+      out += c(C.bold, 'claude-pin') + c(C.dim, '   ' + hint) + '\x1b[K\n';
       if (inSearch || query) {
         const caret = inSearch ? c(C.cyan, '▏') : '';
-        process.stdout.write(c(C.dim, '  search: ') + query + caret + '\n');
+        out += c(C.dim, '  search: ') + query + caret + '\x1b[K\n';
       }
-      process.stdout.write('\n');
+      out += '\x1b[K\n';
       if (!visible.length) {
-        process.stdout.write(c(C.gray, '  (no matches)\n'));
-        return;
+        out += c(C.gray, '  (no matches)') + '\x1b[K\n';
+      } else {
+        visible.forEach((p, i) => {
+          const focused = i === cursor;
+          const selected = p.id === selectedId;
+          const prefix = focused ? c(C.cyan, '▸ ') : '  ';
+          const rawName = displayName(p) || '(unnamed)';
+          const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
+          const dot = selected ? (exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
+          const name = focused ? c(C.bold, rawName) : rawName;
+          const idStr = c(C.gray, p.id.slice(0, 8));
+          out += `${prefix}${dot} ${name} ${idStr}\x1b[K\n    ${c(C.dim, metaLine(p))}\x1b[K\n`;
+          if (p.note) out += `    ${c(C.cyan, '› ' + p.note)}\x1b[K\n`;
+        });
       }
-      visible.forEach((p, i) => {
-        const focused = i === cursor;
-        const selected = p.id === selectedId;
-        const prefix = focused ? c(C.cyan, '▸ ') : '  ';
-        const rawName = displayName(p) || '(unnamed)';
-        const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
-        const dot = selected ? (exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
-        const name = focused ? c(C.bold, rawName) : rawName;
-        const idStr = c(C.gray, p.id.slice(0, 8));
-        process.stdout.write(`${prefix}${dot} ${name} ${idStr}\n    ${c(C.dim, metaLine(p))}\n`);
-        if (p.note) process.stdout.write(`    ${c(C.cyan, '› ' + p.note)}\n`);
-      });
+      out += '\x1b[J';
+      process.stdout.write(out);
     };
 
     const cleanup = () => {
