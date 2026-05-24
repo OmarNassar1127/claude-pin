@@ -6,6 +6,10 @@
 [![downloads](https://img.shields.io/npm/dm/claude-pin.svg)](https://www.npmjs.com/package/claude-pin)
 [![license](https://img.shields.io/npm/l/claude-pin.svg)](LICENSE)
 
+**Install:** `npm i -g claude-pin` — [view on npm](https://www.npmjs.com/package/claude-pin)
+
+---
+
 Claude Code only surfaces recent sessions in `claude --resume`, and transcript files are deleted after 30 days by default ([`cleanupPeriodDays`](https://code.claude.com/docs/en/settings)). If you work on something that spans weeks — a migration, a slow review, an email back-and-forth — the session you care about disappears. `claude-pin` keeps the ones you flag.
 
 It's both a **Claude Code plugin** (adds `/pin`, `/unpin`, `/pins`, `/note` slash commands) and an **npm CLI** (`cpin` with an interactive picker). One source, two distribution channels.
