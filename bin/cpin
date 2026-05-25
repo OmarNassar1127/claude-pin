@@ -123,6 +123,27 @@ function cmdNote(args) {
   else console.log(c(C.green, '✓') + ` note cleared for ${displayName(pin) || id.slice(0, 8)}`);
 }
 
+function cmdAdd(args) {
+  const limit = parseInt(args.limit, 10) || 50;
+  const daysBack = parseInt(args.since, 10) || 365;
+  const items = session.listAllRecentSessions({ limit, daysBack });
+  if (!items.length) {
+    console.log(c(C.gray, 'No recent Claude Code sessions found in ~/.claude/projects/'));
+    return;
+  }
+  const data = store.load();
+  const originallyPinned = new Set(data.pins.map(p => p.id));
+  if (args.plain || !process.stdout.isTTY) {
+    items.forEach(it => {
+      const marker = originallyPinned.has(it.id) ? c(C.green, '●') : c(C.dim, '·');
+      console.log(`${marker} ${c(C.bold, it.title || '(no title)')} ${c(C.gray, it.id.slice(0, 8))}`);
+      console.log(`  ${c(C.dim, shortenCwd(it.cwd) + ' · ' + relTime(new Date(it.mtimeMs).toISOString()))}`);
+    });
+    return;
+  }
+  return addTui(items, originallyPinned);
+}
+
 function cmdUnpin(args) {
   const id = args._[0] || args.session || session.mostRecentSessionId(process.cwd());
   if (!id) { console.error(c(C.red, 'No session id given.')); process.exit(1); }
@@ -324,6 +345,131 @@ function nodeTui(initialPins) {
   });
 }
 
+function addTui(items, originallyPinned) {
+  return new Promise((resolve) => {
+    let cursor = -1;
+    const toggled = new Set();
+    let cleaned = false;
+    let scrollTop = 0;
+
+    const enterScreen = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
+    const exitScreen = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+
+    const finalPinned = (id) => {
+      const orig = originallyPinned.has(id);
+      return toggled.has(id) ? !orig : orig;
+    };
+
+    const viewportSize = () => {
+      const rows = process.stdout.rows || 24;
+      return Math.max(4, Math.floor((rows - 4) / 2));
+    };
+
+    const render = () => {
+      const vp = viewportSize();
+      if (cursor !== -1) {
+        if (cursor < scrollTop) scrollTop = cursor;
+        if (cursor >= scrollTop + vp) scrollTop = cursor - vp + 1;
+      }
+      const end = Math.min(items.length, scrollTop + vp);
+      const pendingPin = [...toggled].filter(id => !originallyPinned.has(id)).length;
+      const pendingUnpin = [...toggled].filter(id => originallyPinned.has(id)).length;
+      let out = '\x1b[H';
+      let header = c(C.bold, 'claude-pin · add');
+      if (pendingPin || pendingUnpin) {
+        const parts = [];
+        if (pendingPin) parts.push(`+${pendingPin}`);
+        if (pendingUnpin) parts.push(`-${pendingUnpin}`);
+        header += c(C.yellow, '   ' + parts.join(' '));
+      }
+      header += c(C.dim, `   showing ${scrollTop + 1}–${end} of ${items.length}`);
+      out += header + '\x1b[K\n';
+      out += c(C.dim, '  ↑/↓ navigate · space: toggle · enter: apply · esc/q: cancel') + '\x1b[K\n';
+      out += '\x1b[K\n';
+      for (let i = scrollTop; i < end; i++) {
+        const it = items[i];
+        const focused = i === cursor;
+        const pinned = finalPinned(it.id);
+        const prefix = focused ? c(C.cyan, '▸ ') : '  ';
+        const dot = pinned ? c(C.green, '●') : c(C.dim, '·');
+        const rawTitle = it.title || c(C.gray, '(no title)');
+        const title = focused ? c(C.bold, rawTitle) : rawTitle;
+        const idStr = c(C.gray, it.id.slice(0, 8));
+        const meta = c(C.dim, shortenCwd(it.cwd) + ' · ' + relTime(new Date(it.mtimeMs).toISOString()));
+        out += `${prefix}${dot} ${title} ${idStr}\x1b[K\n    ${meta}\x1b[K\n`;
+      }
+      out += '\x1b[J';
+      process.stdout.write(out);
+    };
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdin.removeListener('data', onKey);
+      exitScreen();
+    };
+    process.on('exit', cleanup);
+    process.on('SIGINT', () => { cleanup(); process.exit(130); });
+
+    const onKey = (chunk) => {
+      const k = chunk.toString();
+      if (k === '\x03' || k === 'q' || k === '\x1b') {
+        cleanup();
+        if (toggled.size) console.log(c(C.gray, `cancelled (${toggled.size} pending change${toggled.size === 1 ? '' : 's'} discarded)`));
+        resolve(); return;
+      }
+      if (k === '\x1b[A' || k === '\x1bOA' || k === 'k') {
+        cursor = cursor === -1 ? items.length - 1 : Math.max(0, cursor - 1);
+        render(); return;
+      }
+      if (k === '\x1b[B' || k === '\x1bOB' || k === 'j') {
+        cursor = cursor === -1 ? 0 : Math.min(items.length - 1, cursor + 1);
+        render(); return;
+      }
+      if (k === ' ' && cursor !== -1) {
+        const id = items[cursor].id;
+        if (toggled.has(id)) toggled.delete(id); else toggled.add(id);
+        render(); return;
+      }
+      if (k === '\r' || k === '\n') {
+        cleanup();
+        if (!toggled.size) { console.log(c(C.gray, 'no changes')); resolve(); return; }
+        const data = store.load();
+        let pinned = 0, unpinned = 0;
+        for (const id of toggled) {
+          const it = items.find(x => x.id === id);
+          if (!it) continue;
+          if (originallyPinned.has(id)) {
+            data.pins = data.pins.filter(p => p.id !== id);
+            unpinned++;
+          } else {
+            data.pins.push({
+              id: it.id,
+              name: sanitize(it.title) || null,
+              cwd: it.cwd,
+              note: null,
+              pinned_at: new Date().toISOString(),
+            });
+            pinned++;
+          }
+        }
+        store.save(data);
+        if (pinned) console.log(c(C.green, '✓') + ` pinned ${pinned} session${pinned === 1 ? '' : 's'}`);
+        if (unpinned) console.log(c(C.green, '✓') + ` unpinned ${unpinned} session${unpinned === 1 ? '' : 's'}`);
+        resolve();
+      }
+    };
+
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', onKey);
+    enterScreen();
+    render();
+  });
+}
+
 function cmdList(args) {
   const pins = store.list();
   if (!pins.length) {
@@ -425,6 +571,62 @@ function cmdUninstall() {
   }
 }
 
+function semverGreater(a, b) {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+function cmdUpdate(args) {
+  const pkgPath = path.join(repoRoot(), 'package.json');
+  const current = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
+  console.log(c(C.dim, 'checking npm...'));
+  const view = spawnSync('npm', ['view', 'claude-pin', 'version'], { encoding: 'utf8' });
+  if (view.status !== 0) {
+    console.error(c(C.red, 'failed to check npm: ') + (view.stderr || view.stdout).trim());
+    process.exit(1);
+  }
+  const latest = view.stdout.trim();
+  console.log(`  current: ${c(C.bold, current)}`);
+  console.log(`  latest:  ${c(C.bold, latest)}`);
+  if (current === latest) {
+    console.log(c(C.green, '\n✓ already on the latest version'));
+    return;
+  }
+  if (semverGreater(current, latest)) {
+    console.log(c(C.green, `\n✓ you're ahead of npm (local ${current} > registry ${latest}) — looks like a dev build`));
+    return;
+  }
+  console.log(c(C.yellow, `\n! update available: ${current} → ${latest}`));
+  if (args.check) {
+    console.log(c(C.dim, '  run "cpin update" to install'));
+    return;
+  }
+  let isDev = false;
+  try {
+    const npmRoot = spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout.trim();
+    const installPath = path.dirname(path.dirname(fs.realpathSync(__filename)));
+    isDev = !installPath.startsWith(npmRoot);
+    if (isDev) {
+      console.log(c(C.yellow, '\n! you appear to be on a dev install (npm link)'));
+      console.log(c(C.dim, `  binary resolves to: ${installPath}`));
+      console.log(c(C.dim, '  to update the published copy:  npm install -g claude-pin@latest'));
+      console.log(c(C.dim, `  to update your dev copy:        cd ${shortenCwd(installPath)} && git pull`));
+      return;
+    }
+  } catch { /* fall through and try the install */ }
+  console.log(c(C.cyan, `\n▶ installing claude-pin@${latest}...`));
+  const install = spawn('npm', ['install', '-g', `claude-pin@${latest}`], { stdio: 'inherit' });
+  install.on('exit', code => {
+    if (code === 0) console.log(c(C.green, `\n✓ updated to ${latest} — next \`cpin\` invocation uses the new version`));
+    process.exit(code ?? 0);
+  });
+}
+
 function cmdDoctor(args) {
   console.log(c(C.bold, 'claude-pin doctor'));
   console.log(`  store: ${store.storePath()}`);
@@ -451,12 +653,14 @@ ${c(C.bold, 'Setup:')}
   cpin install [--force]     Symlink /pin /unpin /pins into ~/.claude/skills
   cpin uninstall             Remove the symlinks
   cpin doctor [--fix]        Check setup; --fix bumps cleanupPeriodDays
+  cpin update [--check]      Update to the latest claude-pin from npm
 
 ${c(C.bold, 'Usage:')}
   cpin                       Interactive picker (↑↓ · enter resume · d unpin · q quit)
   cpin list                  Same as above; --plain for static output
   cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
   cpin unpin [id]            Unpin (defaults to most recent in cwd)
+  cpin add                   Pin/unpin from a picker of recent sessions across all projects
   cpin note <id> --text X    Set/clear a free-text note on a pin
   cpin prune                 Drop pins whose transcript is gone
   cpin help                  This message
@@ -467,10 +671,12 @@ const cmds = {
   install: cmdInstall, uninstall: cmdUninstall,
   pin: cmdPin, 'pin-current': cmdPin,
   unpin: cmdUnpin, 'unpin-current': cmdUnpin,
+  add: cmdAdd, discover: cmdAdd,
   note: cmdNote,
   list: cmdList, ls: cmdList,
   pick: cmdPick, resume: cmdPick,
   prune: cmdPrune,
+  update: cmdUpdate, upgrade: cmdUpdate,
   doctor: cmdDoctor,
   help, '--help': help, '-h': help,
 };
