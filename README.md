@@ -124,8 +124,10 @@ Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pin
 | `/pins` (slash command) | List pinned sessions inline in the chat. |
 | `/note <text>` (slash command) | Attach a free-text note to the current pinned session. |
 | `cpin` (terminal) | Interactive picker: ↑/↓ navigate, space select, enter resume, `/` search, `d` unpin. |
+| `cpin add` (terminal) | Retroactive pinning — picker of recent sessions across **all** your projects, toggle to pin/unpin. |
+| `cpin update` (terminal) | Self-update to the latest claude-pin from npm. |
 | `cpin list --plain` | Static list for scripting. |
-| `cpin pin/unpin/note/prune/doctor/install/uninstall` | Full CLI surface. |
+| `cpin pin/unpin/note/add/update/prune/doctor/install/uninstall` | Full CLI surface. |
 
 ---
 
@@ -169,6 +171,7 @@ Sets (or clears, if empty) a free-text note on the **currently pinned** session.
 ```
 cpin                       Interactive picker (↑↓ · space select · enter resume · / search · d unpin · q quit)
 cpin list                  Same as above; `--plain` for static output
+cpin add                   Picker of recent sessions across all projects; space to toggle pin, enter to apply
 cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
 cpin unpin [id]            Unpin (defaults to most recent in cwd)
 cpin note <id> --text X    Set/clear a free-text note on a pin
@@ -176,10 +179,35 @@ cpin prune                 Drop pins whose transcript is gone
 cpin install [--force]     Symlink /pin /unpin /pins /note into ~/.claude/skills
 cpin uninstall             Remove the symlinks
 cpin doctor [--fix]        Check setup; --fix bumps cleanupPeriodDays
+cpin update [--check]      Update claude-pin from npm; --check just compares versions
 cpin help                  Show usage
 ```
 
+`cpin add` flags: `--limit N` (default 50), `--since DAYS` (default 365), `--plain` for non-interactive output.
+
 Stdin-fed alternatives for safe shell composition: `cpin pin <id> --name-from-stdin`, `cpin note <id> --text-from-stdin`.
+
+---
+
+## Retroactive pinning with `cpin add`
+
+You can pin any session, not just the current one. Run `cpin add` to open a picker of your last ~50 Claude Code sessions across every project:
+
+```
+claude-pin · add   +2 -1   showing 1–12 of 47
+  ↑/↓ navigate · space: toggle · enter: apply · esc/q: cancel
+
+   ●  Build property research & scoring agent  a25f7a17
+      ~/Documents/house/agent · 2d ago
+▸  ·  Research best voice models 2024          3b3b8de7
+      ~/Documents/voice/chat · 7d ago
+   ·  PiDash scraper debugging                 12f9aabc
+      ~/Documents/PiDash · 14d ago
+```
+
+`●` = currently pinned · `·` = unpinned. Space toggles, enter applies all changes at once, esc cancels.
+
+Session titles come from `/rename` (preferred) or Claude's auto-generated title — the same source the rest of claude-pin uses.
 
 ---
 
@@ -344,6 +372,12 @@ claude plugin validate .
 ### Pull requests welcome
 
 Especially: a fzf-bundled mode, Windows compatibility (the `which`/`spawn('claude')` calls assume Unix), and a `cpin export` / `import` for syncing pins across machines.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
 ---
 
