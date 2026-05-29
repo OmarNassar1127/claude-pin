@@ -169,7 +169,7 @@ Sets (or clears, if empty) a free-text note on the current session. If the sessi
 ## `cpin` CLI
 
 ```
-cpin                       Interactive picker (↑↓ · space select · enter resume · / search · d unpin · q quit)
+cpin                       Interactive picker (↑↓ · space select · enter resume · / search · ctrl-d unpin · ctrl-u undo · q quit)
 cpin list                  Same as above; `--plain` for static output
 cpin add                   Picker of recent sessions across all projects; space to toggle pin, enter to apply
 cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
@@ -225,32 +225,22 @@ Session titles come from `/rename` (preferred) or Claude's auto-generated title 
 
 ## The interactive picker
 
-Launch with `cpin` or `cpin list`. The layout mirrors Claude Code's native `claude --resume`: a title with your position, an always-on search box, and one entry per pin showing **name** then a `time · branch · size` meta line (`✎` marks pins with a note).
-
-```
-  Resume pinned session  (1 of 43)
-  ╭──────────────────────────────────────────────────────────╮
-  │ ⌕ Search…                                                 │
-  ╰──────────────────────────────────────────────────────────╯
-
-  ❯ stripe capture under 50c and user lat lng
-    4 seconds ago · develop · 1MB
-
-    late and cancelation fees  ✎
-    7 minutes ago · master · 26.8MB
-```
+Launch with `cpin` or `cpin list`.
 
 | Key | Action |
 |---|---|
-| *(just type)* | Filter instantly. Matches name, note, cwd, **and the chat content**; space-separate terms to narrow (all must match). |
-| `↑` / `↓` | Move focus (also `ctrl-p` / `ctrl-n`). |
-| `enter` | Resume the focused session. |
-| `ctrl-d` | Unpin the focused row. |
-| `ctrl-u` | Undo the last unpin (restores it in place — your safety net, notes included). |
-| `backspace` | Delete the last search character. |
-| `esc` | Clear the search if non-empty, otherwise quit (`ctrl-c` always quits). |
+| `↑` / `↓` (or `k`/`j`) | Move focus through the list (▸ arrow indicator). |
+| `space` | Select / deselect the focused row. The selected row's dot turns green ●. |
+| `enter` | Resume the **selected** session. Does nothing if no selection. |
+| `/` | Enter search mode — type to filter. Matches across name, note, cwd, **and the chat content itself**; space-separate terms to narrow (all must match). |
+| `backspace` (in search) | Remove last char from filter. |
+| `enter` (in search) | Apply filter and navigate the filtered list. |
+| `esc` (in search) | Clear the filter and exit search mode. |
+| `ctrl-d` | Unpin the focused row (also `d`/`x` outside search). |
+| `ctrl-u` | Undo the last unpin — restores it in place, notes included. Your safety net against a stray unpin. |
+| `q` / `esc` | Quit. |
 
-Only the **focused** row shows a one-line preview of the opening message, so a long list stays scannable. The view scrolls when there are more pins than fit (the `1 of 43` counter tracks your position), and a red `missing` in place of the size means the transcript is gone (`cpin prune` to drop it).
+The list stays compact: **one line per pin** (dot, name, `✎` if it has a note, age, short id). Only the **focused** row expands to show its full path, note, and a one-line preview of the opening message — so a long pin list stays scannable instead of becoming a wall of text. The view scrolls when there are more pins than fit, with a `3–12 of 47` counter in the header. A red `✗` instead of a dot means the transcript is gone (`cpin prune` to drop it).
 
 The picker enters the alternate screen buffer, hides your terminal cursor while open, and cleanly restores both on exit (including via SIGINT/SIGTERM). If [`fzf`](https://github.com/junegunn/fzf) is installed, an fzf-based picker is used instead.
 

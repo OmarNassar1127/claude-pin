@@ -46,14 +46,6 @@ function shortenCwd(cwd) {
   return cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
 }
 
-function humanSize(bytes) {
-  if (!bytes || bytes < 1024) return `${bytes || 0}B`;
-  const units = ['KB', 'MB', 'GB'];
-  let n = bytes, i = -1;
-  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
-  return n.toFixed(1).replace(/\.0$/, '') + units[i];
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function assertValidId(id) {
   if (!UUID_RE.test(id)) throw new Error(`Refusing to act on non-UUID session id: ${JSON.stringify(id).slice(0, 80)}`);
@@ -292,19 +284,15 @@ function fzfInteractive(pins) {
 // not just the title/note.
 function enrichPin(p) {
   const sfp = session.sessionFilePath(p.cwd, p.id);
-  const realPath = fs.existsSync(sfp) ? sfp : session.findAnySessionPath(p.id);
-  const info = session.readSessionInfo(realPath || sfp);
+  const info = session.readSessionInfo(sfp);
   const name = info.customTitle || info.aiTitle || p.name || null;
-  let size = 0, mtimeMs = null;
-  if (realPath) { try { const st = fs.statSync(realPath); size = st.size; mtimeMs = st.mtimeMs; } catch { /* ignore */ } }
+  const exists = fs.existsSync(sfp) || !!session.findAnySessionPath(p.id);
   return {
     ...p,
     _name: name,
-    _exists: !!realPath,
-    _branch: info.gitBranch || null,
-    _size: realPath ? humanSize(size) : null,
-    _when: relTime(mtimeMs ? new Date(mtimeMs).toISOString() : p.pinned_at),
-    _preview: (info.searchText || '').slice(0, 120).trim(),
+    _exists: exists,
+    _meta: metaLine(p),
+    _preview: (info.searchText || '').slice(0, 100).trim(),
     _search: [name || '', p.note || '', p.cwd || '', info.searchText || ''].join(' ').toLowerCase(),
   };
 }
@@ -312,11 +300,13 @@ function enrichPin(p) {
 function nodeTui(initialPins) {
   return new Promise((resolve) => {
     let pins = initialPins.map(enrichPin);
-    let cursor = 0; // focus first row, like `claude --resume`
+    let cursor = -1;
+    let selectedId = null;
+    let inSearch = false;
     let query = '';
     let cleaned = false;
     let scrollTop = 0;
-    let lastUnpinned = null; // { pin, index } — most recent unpin, restorable with ctrl-u
+    let lastUnpinned = null; // { pin, index } — most recent unpin, restorable with `u`
 
     const enterScreen = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
     const exitScreen = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
@@ -334,54 +324,63 @@ function nodeTui(initialPins) {
       const visible = getVisible();
       const rows = process.stdout.rows || 24;
       const cols = process.stdout.columns || 80;
-      if (cursor > visible.length - 1) cursor = Math.max(0, visible.length - 1);
 
-      // Each entry is name + meta (+ optional note) + blank ≈ 3 lines; focused adds a
-      // couple more. Budget entries to the terminal height and scroll to keep focus in view.
-      const vp = Math.max(2, Math.floor((rows - 9) / 3));
-      if (cursor < scrollTop) scrollTop = cursor;
-      if (cursor >= scrollTop + vp) scrollTop = cursor - vp + 1;
-      scrollTop = Math.min(Math.max(0, scrollTop), Math.max(0, visible.length - vp));
+      // Master-detail: every pin is one compact line; only the focused row expands
+      // (cwd + note + preview). Keeps a big pin list scannable instead of a wall of text.
+      // Collapsed rows are 1 line; the focused row adds up to 3 — reserve slack for that.
+      const vp = Math.max(3, rows - 8);
+      if (cursor === -1) scrollTop = 0;
+      else {
+        if (cursor < scrollTop) scrollTop = cursor;
+        if (cursor >= scrollTop + vp) scrollTop = cursor - vp + 1;
+      }
+      scrollTop = Math.min(scrollTop, Math.max(0, visible.length - vp));
       const end = Math.min(visible.length, scrollTop + vp);
 
-      const boxW = Math.max(20, Math.min(cols - 4, 200));
+      // Stable hint legend — `ctrl-u: undo` is always shown (dim), lit yellow when an
+      // undo is available, so the line never jumps around as pins come and go.
+      const undoSeg = lastUnpinned ? c(C.yellow, 'ctrl-u: undo') : c(C.dim, 'ctrl-u: undo');
+      let base;
+      if (inSearch) base = 'type to filter · ↑/↓ move · enter: done · esc: clear';
+      else if (selectedId === null) base = '↑/↓ · space: select · /: search · ctrl-d: unpin · q: quit';
+      else base = 'enter: resume · space: deselect · /: search · ctrl-d · q';
+      let hintLine = c(C.dim, base);
+      if (!inSearch) hintLine += c(C.dim, ' · ') + undoSeg;
+
       let out = '\x1b[H';
-      // Title
-      const pos = visible.length ? `${cursor + 1} of ${visible.length}` : '0';
-      out += '  ' + c(C.bold, 'Resume pinned session') + c(C.dim, `  (${pos})`) + '\x1b[K\n';
-      // Search box (always on — just type to filter)
-      out += '  ' + c(C.dim, '╭' + '─'.repeat(boxW) + '╮') + '\x1b[K\n';
-      const placeholder = 'Search…';
-      const raw = '⌕ ' + (query || placeholder);
-      const shown = truncate(raw, boxW - 2);
-      const pad = ' '.repeat(Math.max(0, (boxW - 1) - shown.length));
-      const body = c(C.cyan, '⌕ ') + (query ? query + c(C.cyan, '▏') : c(C.dim, placeholder)) + pad;
-      out += '  ' + c(C.dim, '│') + ' ' + body + c(C.dim, '│') + '\x1b[K\n';
-      out += '  ' + c(C.dim, '╰' + '─'.repeat(boxW) + '╯') + '\x1b[K\n';
+      let header = c(C.bold, 'claude-pin') + '   ' + hintLine;
+      if (visible.length > vp) header += c(C.dim, `   ${scrollTop + 1}–${end} of ${visible.length}`);
+      out += header + '\x1b[K\n';
+      if (inSearch || query) {
+        const caret = inSearch ? c(C.cyan, '▏') : '';
+        out += c(C.dim, '  search: ') + query + caret + '\x1b[K\n';
+      }
       out += '\x1b[K\n';
 
       if (!visible.length) {
-        const empty = query ? '    (no matches)' : (lastUnpinned ? '    (no pins — ctrl-u to undo)' : '    (no pins left)');
+        const empty = query ? '  (no matches)' : (lastUnpinned ? '  (no pins — press ctrl-u to undo)' : '  (no pins left)');
         out += c(C.gray, empty) + '\x1b[K\n';
       } else {
         for (let i = scrollTop; i < end; i++) {
           const p = visible[i];
           const focused = i === cursor;
-          const rawName = truncate(p._name || '(unnamed)', cols - 8);
-          const caret = focused ? c(C.cyan, '  ❯ ') : '    ';
-          const name = focused ? c(C.cyan + C.bold, rawName) : rawName;
-          const noteMark = p.note ? c(C.dim, ' ✎') : '';
-          out += `${caret}${name}${noteMark}\x1b[K\n`;
-          const meta = [p._when, p._branch, p._exists ? p._size : c(C.red, 'missing')].filter(Boolean).join(c(C.dim, ' · '));
-          out += `    ${c(C.dim, meta)}\x1b[K\n`;
-          if (p.note) out += `    ${c(C.cyan, truncate('› ' + p.note, cols - 6))}\x1b[K\n`;
-          if (focused && p._preview) out += `    ${c(C.gray, truncate('“' + p._preview + '”', cols - 6))}\x1b[K\n`;
-          out += '\x1b[K\n';
+          const selected = p.id === selectedId;
+          const prefix = focused ? c(C.cyan, '▸ ') : '  ';
+          let dot;
+          if (!p._exists) dot = c(C.red, '✗');
+          else if (selected) dot = c(C.green, '●');
+          else dot = c(C.dim, '·');
+          const nameStr = truncate(p._name || '(unnamed)', 50);
+          const name = focused ? c(C.bold, nameStr) : nameStr;
+          const noteMark = p.note ? c(C.cyan, ' ✎') : '';
+          out += `${prefix}${dot} ${name}${noteMark}  ${c(C.gray, '· ' + relTime(p.pinned_at))}  ${c(C.gray, p.id.slice(0, 8))}\x1b[K\n`;
+          if (focused) {
+            out += `      ${c(C.dim, p._meta)}\x1b[K\n`;
+            if (p.note) out += `      ${c(C.cyan, truncate('› ' + p.note, cols - 8))}\x1b[K\n`;
+            if (p._preview) out += `      ${c(C.gray, truncate('“' + p._preview + '”', cols - 8))}\x1b[K\n`;
+          }
         }
       }
-      // Footer legend — undo always shown, lit when available.
-      const undoSeg = lastUnpinned ? c(C.yellow, 'ctrl-u undo') : c(C.dim, 'ctrl-u undo');
-      out += c(C.dim, '  ↑↓ move · enter resume · ctrl-d unpin · ') + undoSeg + c(C.dim, ' · esc quit') + '\x1b[K\n';
       out += '\x1b[J';
       process.stdout.write(out);
     };
@@ -398,66 +397,102 @@ function nodeTui(initialPins) {
     process.on('SIGINT', () => { cleanup(); process.exit(130); });
     process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 
+    const doUnpin = () => {
+      const visible = getVisible();
+      if (cursor === -1 || !visible[cursor]) return;
+      const target = visible[cursor];
+      const index = pins.findIndex(p => p.id === target.id);
+      store.remove(target.id);
+      lastUnpinned = { pin: target, index };
+      if (selectedId === target.id) selectedId = null;
+      pins = pins.filter(p => p.id !== target.id);
+      const newVisible = getVisible();
+      if (!pins.length) { render(); return; } // keep the picker open so ctrl-u can undo the last one
+      if (!newVisible.length) cursor = -1;
+      else if (cursor >= newVisible.length) cursor = newVisible.length - 1;
+      render();
+    };
+    const doUndo = () => {
+      if (!lastUnpinned) return;
+      const { pin, index } = lastUnpinned;
+      // Re-persist (strip the cached _-prefixed display fields) and restore in place.
+      const data = store.load();
+      if (!data.pins.some(p => p.id === pin.id)) {
+        const { _name, _exists, _meta, _preview, _search, ...bare } = pin;
+        data.pins.push(bare);
+        store.save(data);
+      }
+      const at = Math.min(Math.max(index, 0), pins.length);
+      pins.splice(at, 0, pin);
+      lastUnpinned = null;
+      const visibleNow = getVisible();
+      cursor = visibleNow.findIndex(p => p.id === pin.id);
+      if (cursor === -1) cursor = 0;
+      render();
+    };
+
     const onKey = (chunk) => {
       const k = chunk.toString();
-      const visible = getVisible();
+      if (k === '\x03') { cleanup(); resolve(); return; }
+      if (k === '\x04') { doUnpin(); return; } // ctrl-d: unpin (works while searching too)
+      if (k === '\x15') { doUndo(); return; }  // ctrl-u: undo (works while searching too)
 
-      if (k === '\x03') { cleanup(); resolve(); return; }       // ctrl-c: quit
-      if (k === '\x1b') {                                        // esc: clear query, else quit
-        if (query) { query = ''; cursor = 0; render(); return; }
-        cleanup(); resolve(); return;
+      if (inSearch) {
+        if (k === '\x1b') { query = ''; inSearch = false; cursor = -1; render(); return; }
+        // Arrow keys move focus through the filtered list without leaving search —
+        // type to narrow, then arrow straight down to the row you want.
+        if (k === '\x1b[A' || k === '\x1bOA') {
+          const v = getVisible();
+          if (v.length) cursor = cursor === -1 ? v.length - 1 : Math.max(0, cursor - 1);
+          render(); return;
+        }
+        if (k === '\x1b[B' || k === '\x1bOB') {
+          const v = getVisible();
+          if (v.length) cursor = cursor === -1 ? 0 : Math.min(v.length - 1, cursor + 1);
+          render(); return;
+        }
+        if (k === '\r' || k === '\n') {
+          inSearch = false;
+          if (getVisible().length && cursor === -1) cursor = 0;
+          render(); return;
+        }
+        if (k === '\x7f' || k === '\x08') { query = query.slice(0, -1); cursor = -1; render(); return; }
+        // Don't let an arrow's "[A"/"OB" tail leak into the query as literal chars.
+        if (/^[\x20-\x7e]+$/.test(k) && !k.startsWith('\x1b')) { query += k; cursor = -1; render(); return; }
+        return;
       }
-      if (k === '\x1b[A' || k === '\x1bOA' || k === '\x10') {    // up / ctrl-p
-        if (visible.length) cursor = Math.max(0, cursor - 1);
+
+      if (k === 'q' || k === '\x1b') { cleanup(); resolve(); return; }
+      if (k === '/') { inSearch = true; render(); return; }
+
+      const visible = getVisible();
+      if (k === '\x1b[A' || k === '\x1bOA' || k === 'k') {
+        if (!visible.length) return;
+        cursor = cursor === -1 ? visible.length - 1 : Math.max(0, cursor - 1);
         render(); return;
       }
-      if (k === '\x1b[B' || k === '\x1bOB' || k === '\x0e') {    // down / ctrl-n
-        if (visible.length) cursor = Math.min(visible.length - 1, cursor + 1);
+      if (k === '\x1b[B' || k === '\x1bOB' || k === 'j') {
+        if (!visible.length) return;
+        cursor = cursor === -1 ? 0 : Math.min(visible.length - 1, cursor + 1);
         render(); return;
       }
-      if (k === '\r' || k === '\n') {                            // enter: resume focused
-        if (!visible.length || !visible[cursor]) return;
-        const chosen = pins.find(p => p.id === visible[cursor].id) || visible[cursor];
+      if (k === ' ') {
+        if (cursor === -1 || !visible[cursor]) return;
+        const focusedPin = visible[cursor];
+        selectedId = (selectedId === focusedPin.id) ? null : focusedPin.id;
+        render(); return;
+      }
+      if (k === '\r' || k === '\n') {
+        if (selectedId === null) return;
+        const chosen = pins.find(p => p.id === selectedId);
+        if (!chosen) return;
         cleanup();
         process.stdout.write('\n');
         resumeAndExit(chosen);
         return;
       }
-      if (k === '\x04') {                                        // ctrl-d: unpin focused
-        if (!visible.length || !visible[cursor]) return;
-        const target = visible[cursor];
-        const index = pins.findIndex(p => p.id === target.id);
-        store.remove(target.id);
-        lastUnpinned = { pin: target, index };
-        pins = pins.filter(p => p.id !== target.id);
-        const nv = getVisible();
-        if (cursor >= nv.length) cursor = Math.max(0, nv.length - 1);
-        render();
-        return;
-      }
-      if (k === '\x15') {                                        // ctrl-u: undo last unpin
-        if (!lastUnpinned) return;
-        const { pin, index } = lastUnpinned;
-        const data = store.load();
-        if (!data.pins.some(p => p.id === pin.id)) {
-          const { _name, _exists, _branch, _size, _when, _preview, _search, ...bare } = pin;
-          data.pins.push(bare);
-          store.save(data);
-        }
-        const at = Math.min(Math.max(index, 0), pins.length);
-        pins.splice(at, 0, pin);
-        lastUnpinned = null;
-        cursor = Math.max(0, getVisible().findIndex(p => p.id === pin.id));
-        render();
-        return;
-      }
-      if (k === '\x7f' || k === '\x08') {                        // backspace: edit query
-        query = query.slice(0, -1); cursor = 0; render(); return;
-      }
-      // Any printable text filters the list (always-on search, no mode to enter).
-      if (/^[\x20-\x7e]+$/.test(k) && !k.startsWith('\x1b')) {
-        query += k; cursor = 0; render(); return;
-      }
+      if (k === 'd' || k === 'x') { doUnpin(); return; }
+      if (k === 'u') { doUndo(); return; }
     };
 
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
@@ -830,7 +865,7 @@ ${c(C.bold, 'Setup:')}
   cpin update [--check]      Update to the latest claude-pin from npm
 
 ${c(C.bold, 'Usage:')}
-  cpin                       Interactive picker (type to search · ↑↓ · enter resume · ctrl-d unpin · ctrl-u undo · esc quit)
+  cpin                       Interactive picker (↑↓ · enter resume · ctrl-d unpin · ctrl-u undo · q quit)
   cpin list                  Same as above; --plain for static output
   cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
   cpin unpin [id]            Unpin (defaults to most recent in cwd)

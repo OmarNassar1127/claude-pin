@@ -4,6 +4,13 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.6.1 — 2026-05-29
+
+### Changed
+
+- **Reverted the picker to the compact list layout** (one line per pin, focused row expands with cwd/note/preview, `/` to search). The `claude --resume`-style search box from 0.6.0 didn't earn its keep.
+- **Kept the `ctrl-d` (unpin) / `ctrl-u` (undo) keybindings** from 0.6.0 — they now work everywhere, including while searching. `d`/`x`/`u` still work outside search.
+
 ## 0.6.0 — 2026-05-29
 
 ### Changed
