@@ -4,6 +4,13 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.5.1 — 2026-05-29
+
+### Changed
+
+- **Compact picker layout.** The list now shows one line per pin (name, a `✎` marker if it has a note, age, short id) and expands only the focused row to its full path, note, and preview. Long pin lists stay scannable instead of becoming a wall of text. The view scrolls when pins exceed the terminal height, with a `3–12 of 47` counter; a red `✗` flags pins whose transcript is gone.
+- **Stable `u: undo` hint.** The undo affordance is always shown in the footer legend (dim), lit yellow only when an undo is available, so the hint line no longer shifts as pins come and go.
+
 ## 0.5.0 — 2026-05-29
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "claude-pin",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Pin Claude Code sessions so they survive the --resume window. Adds /pin, /unpin, /pins, /note slash commands plus the cpin CLI with an interactive picker.",
   "scripts": {
     "test": "node --test"

@@ -305,10 +305,12 @@ function nodeTui(initialPins) {
     let inSearch = false;
     let query = '';
     let cleaned = false;
+    let scrollTop = 0;
     let lastUnpinned = null; // { pin, index } — most recent unpin, restorable with `u`
 
     const enterScreen = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
     const exitScreen = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
+    const truncate = (s, n) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s);
 
     const getVisible = () => {
       if (!query) return pins;
@@ -320,36 +322,64 @@ function nodeTui(initialPins) {
 
     const render = () => {
       const visible = getVisible();
-      let hint;
-      if (inSearch) hint = 'type to filter · ↑/↓ move · enter: done · esc: clear';
-      else if (selectedId === null) hint = '↑/↓ navigate · space: select · /: search · d: unpin · q: quit';
-      else hint = 'enter: resume · space: deselect · /: search · ↑/↓ · d · q';
-      if (!inSearch && lastUnpinned) hint += c(C.yellow, ' · u: undo');
+      const rows = process.stdout.rows || 24;
+      const cols = process.stdout.columns || 80;
+
+      // Master-detail: every pin is one compact line; only the focused row expands
+      // (cwd + note + preview). Keeps a big pin list scannable instead of a wall of text.
+      // Collapsed rows are 1 line; the focused row adds up to 3 — reserve slack for that.
+      const vp = Math.max(3, rows - 8);
+      if (cursor === -1) scrollTop = 0;
+      else {
+        if (cursor < scrollTop) scrollTop = cursor;
+        if (cursor >= scrollTop + vp) scrollTop = cursor - vp + 1;
+      }
+      scrollTop = Math.min(scrollTop, Math.max(0, visible.length - vp));
+      const end = Math.min(visible.length, scrollTop + vp);
+
+      // Stable hint legend — `u: undo` is always shown (dim), lit yellow when an undo
+      // is actually available, so the line never jumps around as pins come and go.
+      const undoSeg = lastUnpinned ? c(C.yellow, 'u: undo') : c(C.dim, 'u: undo');
+      let base;
+      if (inSearch) base = 'type to filter · ↑/↓ move · enter: done · esc: clear';
+      else if (selectedId === null) base = '↑/↓ · space: select · /: search · d: unpin · q: quit';
+      else base = 'enter: resume · space: deselect · /: search · d · q';
+      let hintLine = c(C.dim, base);
+      if (!inSearch) hintLine += c(C.dim, ' · ') + undoSeg;
+
       let out = '\x1b[H';
-      out += c(C.bold, 'claude-pin') + c(C.dim, '   ' + hint) + '\x1b[K\n';
+      let header = c(C.bold, 'claude-pin') + '   ' + hintLine;
+      if (visible.length > vp) header += c(C.dim, `   ${scrollTop + 1}–${end} of ${visible.length}`);
+      out += header + '\x1b[K\n';
       if (inSearch || query) {
         const caret = inSearch ? c(C.cyan, '▏') : '';
         out += c(C.dim, '  search: ') + query + caret + '\x1b[K\n';
       }
       out += '\x1b[K\n';
+
       if (!visible.length) {
         const empty = query ? '  (no matches)' : (lastUnpinned ? '  (no pins — press u to undo)' : '  (no pins left)');
         out += c(C.gray, empty) + '\x1b[K\n';
       } else {
-        visible.forEach((p, i) => {
+        for (let i = scrollTop; i < end; i++) {
+          const p = visible[i];
           const focused = i === cursor;
           const selected = p.id === selectedId;
           const prefix = focused ? c(C.cyan, '▸ ') : '  ';
-          const rawName = p._name || '(unnamed)';
-          const dot = selected ? (p._exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
-          const name = focused ? c(C.bold, rawName) : rawName;
-          const idStr = c(C.gray, p.id.slice(0, 8));
-          out += `${prefix}${dot} ${name} ${idStr}\x1b[K\n    ${c(C.dim, p._meta)}\x1b[K\n`;
-          if (p.note) out += `    ${c(C.cyan, '› ' + p.note)}\x1b[K\n`;
-          // Preview the chat content only for the focused row — keeps the list compact
-          // while still giving a peek at what the session was about.
-          if (focused && p._preview) out += `    ${c(C.gray, '“' + p._preview + '”')}\x1b[K\n`;
-        });
+          let dot;
+          if (!p._exists) dot = c(C.red, '✗');
+          else if (selected) dot = c(C.green, '●');
+          else dot = c(C.dim, '·');
+          const nameStr = truncate(p._name || '(unnamed)', 50);
+          const name = focused ? c(C.bold, nameStr) : nameStr;
+          const noteMark = p.note ? c(C.cyan, ' ✎') : '';
+          out += `${prefix}${dot} ${name}${noteMark}  ${c(C.gray, '· ' + relTime(p.pinned_at))}  ${c(C.gray, p.id.slice(0, 8))}\x1b[K\n`;
+          if (focused) {
+            out += `      ${c(C.dim, p._meta)}\x1b[K\n`;
+            if (p.note) out += `      ${c(C.cyan, truncate('› ' + p.note, cols - 8))}\x1b[K\n`;
+            if (p._preview) out += `      ${c(C.gray, truncate('“' + p._preview + '”', cols - 8))}\x1b[K\n`;
+          }
+        }
       }
       out += '\x1b[J';
       process.stdout.write(out);

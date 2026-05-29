@@ -240,7 +240,7 @@ Launch with `cpin` or `cpin list`.
 | `u` | Undo the last unpin (restores it in place — your safety net against a stray `d`, notes included). |
 | `q` / `esc` | Quit. |
 
-The focused row also shows a one-line preview of the session's opening message, so you can tell pins apart without resuming them.
+The list stays compact: **one line per pin** (dot, name, `✎` if it has a note, age, short id). Only the **focused** row expands to show its full path, note, and a one-line preview of the opening message — so a long pin list stays scannable instead of becoming a wall of text. The view scrolls when there are more pins than fit, with a `3–12 of 47` counter in the header. A red `✗` instead of a dot means the transcript is gone (`cpin prune` to drop it).
 
 The picker enters the alternate screen buffer, hides your terminal cursor while open, and cleanly restores both on exit (including via SIGINT/SIGTERM). If [`fzf`](https://github.com/junegunn/fzf) is installed, an fzf-based picker is used instead.
 
