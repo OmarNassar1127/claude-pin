@@ -176,6 +176,8 @@ cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
 cpin unpin [id]            Unpin (defaults to most recent in cwd)
 cpin note <id> --text X    Set/clear a free-text note on a pin
 cpin prune                 Drop pins whose transcript is gone
+cpin export [--out FILE]   Back up the pin store (stdout, or to FILE)
+cpin import FILE [--replace] Merge pins from a backup (--replace clears first)
 cpin install [--force]     Symlink /pin /unpin /pins /note into ~/.claude/skills
 cpin uninstall             Remove the symlinks
 cpin doctor [--fix]        Check setup; --fix bumps cleanupPeriodDays
@@ -186,6 +188,16 @@ cpin help                  Show usage
 `cpin add` flags: `--limit N` (default 50), `--since DAYS` (default 365), `--plain` for non-interactive output.
 
 Stdin-fed alternatives for safe shell composition: `cpin pin <id> --name-from-stdin`, `cpin note <id> --text-from-stdin`.
+
+### Backup with `export` / `import`
+
+```bash
+cpin export --out pins-backup.json   # save your pin store (ids, names, notes, cwds)
+cpin import pins-backup.json         # merge it back; dup ids are skipped
+cpin import pins-backup.json --replace  # overwrite the current store instead
+```
+
+Useful for backing up before a reinstall, or moving notes between machines. **Caveat:** a pin only resumes on a machine that actually has the matching transcript at the recorded `cwd`. Across machines, treat `import` as restoring your *notes and names* — the sessions themselves resume only where the transcripts live. Run `cpin prune` afterwards to drop pins whose transcript is missing.
 
 ---
 
@@ -225,7 +237,10 @@ Launch with `cpin` or `cpin list`.
 | `enter` (in search) | Apply filter and navigate the filtered list. |
 | `esc` (in search) | Clear the filter and exit search mode. |
 | `d` (or `x`) | Unpin the focused row. |
+| `u` | Undo the last unpin (restores it in place — your safety net against a stray `d`, notes included). |
 | `q` / `esc` | Quit. |
+
+The focused row also shows a one-line preview of the session's opening message, so you can tell pins apart without resuming them.
 
 The picker enters the alternate screen buffer, hides your terminal cursor while open, and cleanly restores both on exit (including via SIGINT/SIGTERM). If [`fzf`](https://github.com/junegunn/fzf) is installed, an fzf-based picker is used instead.
 

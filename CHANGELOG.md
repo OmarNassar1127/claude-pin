@@ -4,6 +4,19 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — 2026-05-29
+
+### Added
+
+- **Content preview in the picker.** The focused row now shows a one-line snippet of the session's opening message, so you can tell pins apart without resuming them.
+- **Undo unpin (`u`).** Pressing `d` no longer loses a pin for good — `u` restores the last unpinned session in place, note and all. The picker also stays open after the final unpin so you can undo it.
+- **`cpin export` / `cpin import`.** Back up the pin store to stdout or a file and merge it back (`--replace` to overwrite). Cross-machine, treat it as restoring notes/names — a pin only resumes where its transcript actually lives.
+- **Test suite.** Zero-dep `node --test` coverage (`npm test`) for cwd extraction, the re-pin merge, `/note` auto-pin, and export/import round-trips.
+
+### Fixed
+
+- **Arrow keys work while searching.** In `/` search you can now move the focus with ↑/↓ without pressing enter first; arrow escape sequences no longer leak into the query.
+
 ## 0.4.0 — 2026-05-29
 
 ### Fixed

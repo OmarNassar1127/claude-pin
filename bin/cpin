@@ -292,6 +292,7 @@ function enrichPin(p) {
     _name: name,
     _exists: exists,
     _meta: metaLine(p),
+    _preview: (info.searchText || '').slice(0, 100).trim(),
     _search: [name || '', p.note || '', p.cwd || '', info.searchText || ''].join(' ').toLowerCase(),
   };
 }
@@ -304,6 +305,7 @@ function nodeTui(initialPins) {
     let inSearch = false;
     let query = '';
     let cleaned = false;
+    let lastUnpinned = null; // { pin, index } — most recent unpin, restorable with `u`
 
     const enterScreen = () => process.stdout.write('\x1b[?1049h\x1b[?25l');
     const exitScreen = () => process.stdout.write('\x1b[?25h\x1b[?1049l');
@@ -319,9 +321,10 @@ function nodeTui(initialPins) {
     const render = () => {
       const visible = getVisible();
       let hint;
-      if (inSearch) hint = 'type to filter · enter: apply · esc: clear';
+      if (inSearch) hint = 'type to filter · ↑/↓ move · enter: done · esc: clear';
       else if (selectedId === null) hint = '↑/↓ navigate · space: select · /: search · d: unpin · q: quit';
       else hint = 'enter: resume · space: deselect · /: search · ↑/↓ · d · q';
+      if (!inSearch && lastUnpinned) hint += c(C.yellow, ' · u: undo');
       let out = '\x1b[H';
       out += c(C.bold, 'claude-pin') + c(C.dim, '   ' + hint) + '\x1b[K\n';
       if (inSearch || query) {
@@ -330,7 +333,8 @@ function nodeTui(initialPins) {
       }
       out += '\x1b[K\n';
       if (!visible.length) {
-        out += c(C.gray, '  (no matches)') + '\x1b[K\n';
+        const empty = query ? '  (no matches)' : (lastUnpinned ? '  (no pins — press u to undo)' : '  (no pins left)');
+        out += c(C.gray, empty) + '\x1b[K\n';
       } else {
         visible.forEach((p, i) => {
           const focused = i === cursor;
@@ -342,6 +346,9 @@ function nodeTui(initialPins) {
           const idStr = c(C.gray, p.id.slice(0, 8));
           out += `${prefix}${dot} ${name} ${idStr}\x1b[K\n    ${c(C.dim, p._meta)}\x1b[K\n`;
           if (p.note) out += `    ${c(C.cyan, '› ' + p.note)}\x1b[K\n`;
+          // Preview the chat content only for the focused row — keeps the list compact
+          // while still giving a peek at what the session was about.
+          if (focused && p._preview) out += `    ${c(C.gray, '“' + p._preview + '”')}\x1b[K\n`;
         });
       }
       out += '\x1b[J';
@@ -366,13 +373,26 @@ function nodeTui(initialPins) {
 
       if (inSearch) {
         if (k === '\x1b') { query = ''; inSearch = false; cursor = -1; render(); return; }
+        // Arrow keys move focus through the filtered list without leaving search —
+        // type to narrow, then arrow straight down to the row you want.
+        if (k === '\x1b[A' || k === '\x1bOA') {
+          const v = getVisible();
+          if (v.length) cursor = cursor === -1 ? v.length - 1 : Math.max(0, cursor - 1);
+          render(); return;
+        }
+        if (k === '\x1b[B' || k === '\x1bOB') {
+          const v = getVisible();
+          if (v.length) cursor = cursor === -1 ? 0 : Math.min(v.length - 1, cursor + 1);
+          render(); return;
+        }
         if (k === '\r' || k === '\n') {
           inSearch = false;
           if (getVisible().length && cursor === -1) cursor = 0;
           render(); return;
         }
         if (k === '\x7f' || k === '\x08') { query = query.slice(0, -1); cursor = -1; render(); return; }
-        if (/^[\x20-\x7e]+$/.test(k)) { query += k; cursor = -1; render(); return; }
+        // Don't let an arrow's "[A"/"OB" tail leak into the query as literal chars.
+        if (/^[\x20-\x7e]+$/.test(k) && !k.startsWith('\x1b')) { query += k; cursor = -1; render(); return; }
         return;
       }
 
@@ -408,14 +428,36 @@ function nodeTui(initialPins) {
       if (k === 'd' || k === 'x') {
         if (cursor === -1 || !visible[cursor]) return;
         const target = visible[cursor];
+        const index = pins.findIndex(p => p.id === target.id);
         store.remove(target.id);
+        lastUnpinned = { pin: target, index };
         if (selectedId === target.id) selectedId = null;
         pins = pins.filter(p => p.id !== target.id);
         const newVisible = getVisible();
-        if (!pins.length) { cleanup(); process.stdout.write('\n' + c(C.gray, 'No pins left.\n')); resolve(); return; }
+        if (!pins.length) { render(); return; } // keep the picker open so `u` can undo the last one
         if (!newVisible.length) cursor = -1;
         else if (cursor >= newVisible.length) cursor = newVisible.length - 1;
         render();
+        return;
+      }
+      if (k === 'u') {
+        if (!lastUnpinned) return;
+        const { pin, index } = lastUnpinned;
+        // Re-persist (strip the cached _-prefixed display fields) and restore in place.
+        const data = store.load();
+        if (!data.pins.some(p => p.id === pin.id)) {
+          const { _name, _exists, _meta, _preview, _search, ...bare } = pin;
+          data.pins.push(bare);
+          store.save(data);
+        }
+        const at = Math.min(Math.max(index, 0), pins.length);
+        pins.splice(at, 0, pin);
+        lastUnpinned = null;
+        const visibleNow = getVisible();
+        cursor = visibleNow.findIndex(p => p.id === pin.id);
+        if (cursor === -1) cursor = 0;
+        render();
+        return;
       }
     };
 
@@ -590,6 +632,57 @@ function cmdPrune() {
   }
 }
 
+function cmdExport(args) {
+  const data = store.load();
+  const json = JSON.stringify(data, null, 2) + '\n';
+  if (args.out) {
+    fs.writeFileSync(args.out, json);
+    console.log(c(C.green, '✓') + ` exported ${data.pins.length} pin(s) to ${args.out}`);
+  } else {
+    process.stdout.write(json);
+  }
+}
+
+function cmdImport(args) {
+  const file = args._[0] || args.file;
+  if (!file) { console.error(c(C.red, 'Usage: cpin import <file> [--replace]')); process.exit(1); }
+  let incoming;
+  try {
+    incoming = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    console.error(c(C.red, `Cannot read/parse ${file}: ${err.message}`));
+    process.exit(1);
+  }
+  const incomingPins = Array.isArray(incoming) ? incoming : incoming && incoming.pins;
+  if (!Array.isArray(incomingPins)) {
+    console.error(c(C.red, 'Not a valid export: expected a pins array or { pins: [...] }.'));
+    process.exit(1);
+  }
+  const data = store.load();
+  if (args.replace) data.pins = [];
+  const seen = new Set(data.pins.map(p => p.id));
+  let added = 0, skipped = 0, invalid = 0;
+  for (const p of incomingPins) {
+    if (!p || !UUID_RE.test(p.id || '')) { invalid++; continue; }
+    if (seen.has(p.id)) { skipped++; continue; }
+    data.pins.push({
+      id: p.id,
+      name: sanitizeName(p.name) || null,
+      cwd: typeof p.cwd === 'string' ? p.cwd : null,
+      note: sanitize(p.note, 1000),
+      pinned_at: typeof p.pinned_at === 'string' ? p.pinned_at : new Date().toISOString(),
+    });
+    seen.add(p.id);
+    added++;
+  }
+  store.save(data);
+  console.log(c(C.green, '✓') + ` imported ${added} pin(s)` +
+    (skipped ? c(C.gray, `, ${skipped} already present`) : '') +
+    (invalid ? c(C.yellow, `, ${invalid} skipped (bad id)`) : ''));
+  // cwd + transcripts are machine-specific — flag that imported pins may not resume here.
+  if (added) console.log(c(C.dim, '  Note: pins resume only on a machine that has the matching transcripts. Run `cpin prune` to drop dead ones.'));
+}
+
 const SKILL_NAMES = ['pin', 'unpin', 'pins', 'note'];
 
 function repoRoot() {
@@ -738,13 +831,15 @@ ${c(C.bold, 'Setup:')}
   cpin update [--check]      Update to the latest claude-pin from npm
 
 ${c(C.bold, 'Usage:')}
-  cpin                       Interactive picker (↑↓ · enter resume · d unpin · q quit)
+  cpin                       Interactive picker (↑↓ · enter resume · d unpin · u undo · q quit)
   cpin list                  Same as above; --plain for static output
   cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
   cpin unpin [id]            Unpin (defaults to most recent in cwd)
   cpin add                   Pin/unpin from a picker of recent sessions across all projects
   cpin note <id> --text X    Set/clear a free-text note on a pin
   cpin prune                 Drop pins whose transcript is gone
+  cpin export [--out FILE]   Print/write the pin store (backup)
+  cpin import FILE [--replace] Merge pins from a backup (--replace overwrites)
   cpin help                  This message
 `);
 }
@@ -758,6 +853,7 @@ const cmds = {
   list: cmdList, ls: cmdList,
   pick: cmdPick, resume: cmdPick,
   prune: cmdPrune,
+  export: cmdExport, import: cmdImport,
   update: cmdUpdate, upgrade: cmdUpdate,
   doctor: cmdDoctor,
   help, '--help': help, '-h': help,
