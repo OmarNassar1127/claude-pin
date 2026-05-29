@@ -70,6 +70,14 @@ function displayName(pin) {
   return session.liveTitle(pin) || pin.name || null;
 }
 
+function warnRetentionIfUnsafe() {
+  const ret = settings.currentRetentionDays();
+  if (typeof ret !== 'number' || ret < 365) {
+    console.log(c(C.yellow, `! cleanupPeriodDays is ${ret ?? 'default (30)'} — pinned transcripts may still be deleted.`));
+    console.log(c(C.dim, `  Run "cpin doctor --fix" to bump it to ${settings.SAFE_RETENTION_DAYS} days.`));
+  }
+}
+
 function cmdPin(args) {
   const id = args._[0] || args.session || session.mostRecentSessionId(process.cwd());
   if (!id) {
@@ -86,22 +94,43 @@ function cmdPin(args) {
   if (args['name-from-stdin']) {
     explicit = fs.readFileSync(0, 'utf8');
   }
+  const explicitName = sanitizeName(explicit);
+  const noteProvided = args.note !== undefined;
+  const noteVal = noteProvided ? sanitize(args.note, 1000) : null;
   const resolvedCwd = found?.cwd || cwd;
+
+  const data = store.load();
+  const existing = data.pins.find(p => p.id === id);
+
+  if (existing) {
+    // Re-pinning must never silently destroy an existing name or note: only touch
+    // a field when the user explicitly supplied a new value for it.
+    let changed = false;
+    if (explicitName && explicitName !== existing.name) { existing.name = explicitName; changed = true; }
+    if (noteProvided && noteVal !== existing.note) { existing.note = noteVal; changed = true; }
+    if (resolvedCwd && existing.cwd !== resolvedCwd) { existing.cwd = resolvedCwd; } // silent repair
+    store.save(data);
+    const label = displayName(existing) || id.slice(0, 8);
+    if (changed) {
+      console.log(c(C.green, '✓') + ` updated ${c(C.bold, label)} ${c(C.gray, '· ' + shortenCwd(existing.cwd))}`);
+    } else {
+      console.log(c(C.cyan, '↺') + ` already pinned ${c(C.bold, label)} ${c(C.gray, '· ' + shortenCwd(existing.cwd))}`);
+    }
+    return;
+  }
+
   const fallback = session.readSessionTitle(session.sessionFilePath(resolvedCwd, id));
   const pin = {
     id,
-    name: sanitizeName(explicit) || sanitizeName(fallback) || null,
+    name: explicitName || sanitizeName(fallback) || null,
     cwd: resolvedCwd,
-    note: sanitizeName(args.note),
+    note: noteVal,
     pinned_at: new Date().toISOString(),
   };
-  store.add(pin);
-  const ret = settings.currentRetentionDays();
+  data.pins.push(pin);
+  store.save(data);
   console.log(c(C.green, '✓') + ` pinned ${c(C.bold, pin.name || id.slice(0, 8))} ${c(C.gray, '· ' + shortenCwd(pin.cwd))}`);
-  if (typeof ret !== 'number' || ret < 365) {
-    console.log(c(C.yellow, `! cleanupPeriodDays is ${ret ?? 'default (30)'} — pinned transcripts may still be deleted.`));
-    console.log(c(C.dim, `  Run "cpin doctor" to bump it to ${settings.SAFE_RETENTION_DAYS} days.`));
-  }
+  warnRetentionIfUnsafe();
 }
 
 function cmdNote(args) {
@@ -112,15 +141,36 @@ function cmdNote(args) {
   if (args['text-from-stdin']) text = fs.readFileSync(0, 'utf8');
   const clean = sanitize(text, 1000);
   const data = store.load();
-  const pin = data.pins.find(p => p.id === id);
+  let pin = data.pins.find(p => p.id === id);
+  let autoPinned = false;
   if (!pin) {
-    console.error(c(C.yellow, `Not pinned (${id.slice(0, 8)}). Run /pin first, then /note.`));
-    process.exit(1);
+    // Noting an unpinned session pins it on the spot — a note is worthless if the
+    // transcript it points at gets garbage-collected for lack of a pin.
+    const found = session.findAnySessionFile(id);
+    const resolvedCwd = found?.cwd || process.cwd();
+    const fallback = session.readSessionTitle(session.sessionFilePath(resolvedCwd, id));
+    pin = {
+      id,
+      name: sanitizeName(fallback) || null,
+      cwd: resolvedCwd,
+      note: null,
+      pinned_at: new Date().toISOString(),
+    };
+    data.pins.push(pin);
+    autoPinned = true;
   }
   pin.note = clean;
   store.save(data);
-  if (clean) console.log(c(C.green, '✓') + ` note set for ${displayName(pin) || id.slice(0, 8)}: ${c(C.cyan, clean)}`);
-  else console.log(c(C.green, '✓') + ` note cleared for ${displayName(pin) || id.slice(0, 8)}`);
+  const label = displayName(pin) || id.slice(0, 8);
+  if (autoPinned) {
+    if (clean) console.log(c(C.green, '✓') + ` pinned & noted ${c(C.bold, label)}: ${c(C.cyan, clean)}`);
+    else console.log(c(C.green, '✓') + ` pinned ${c(C.bold, label)}`);
+    warnRetentionIfUnsafe();
+  } else if (clean) {
+    console.log(c(C.green, '✓') + ` note set for ${label}: ${c(C.cyan, clean)}`);
+  } else {
+    console.log(c(C.green, '✓') + ` note cleared for ${label}`);
+  }
 }
 
 function cmdAdd(args) {
@@ -156,7 +206,7 @@ function cmdUnpin(args) {
 function plainList(pins) {
   for (const p of pins) {
     const name = displayName(p) || c(C.gray, '(unnamed)');
-    const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
+    const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionPath(p.id);
     const marker = exists ? c(C.green, '●') : c(C.red, '✗');
     console.log(`${marker} ${c(C.bold, name)} ${c(C.gray, p.id.slice(0, 8))}`);
     console.log(`  ${c(C.dim, metaLine(p))}`);
@@ -166,6 +216,17 @@ function plainList(pins) {
 
 function resumeAndExit(pin) {
   assertValidId(pin.id);
+  if (!fs.existsSync(pin.cwd)) {
+    // Legacy pins stored a lossily-decoded cwd; recover the real one from the
+    // transcript and repair the store so this only ever happens once.
+    const found = session.findAnySessionFile(pin.id);
+    if (found && found.cwd !== pin.cwd && fs.existsSync(found.cwd)) {
+      pin.cwd = found.cwd;
+      const data = store.load();
+      const stored = data.pins.find(p => p.id === pin.id);
+      if (stored) { stored.cwd = found.cwd; store.save(data); }
+    }
+  }
   if (!fs.existsSync(pin.cwd)) {
     console.error(c(C.yellow, '! cannot resume: original project directory no longer exists'));
     console.error(c(C.dim, `  ${pin.cwd}`));
@@ -183,12 +244,16 @@ function resumeAndExit(pin) {
 
 function fzfInteractive(pins) {
   const lines = pins.map(p => {
-    const name = displayName(p) || '(unnamed)';
-    const summary = session.readSummary(session.sessionFilePath(p.cwd, p.id)) || '';
-    return [p.id, name, shortenCwd(p.cwd), relTime(p.pinned_at), summary].join('\t');
+    const info = session.readSessionInfo(session.sessionFilePath(p.cwd, p.id));
+    const name = info.customTitle || info.aiTitle || p.name || '(unnamed)';
+    const clean = s => (s || '').replace(/[\t\n\r]/g, ' ');
+    // Column 6 (note + chat content) is searched by fzf but hidden from display
+    // via --with-nth, so a query can hit the conversation, not just the title.
+    const hidden = clean([p.note || '', info.searchText || ''].join(' '));
+    return [p.id, clean(name), shortenCwd(p.cwd), relTime(p.pinned_at), clean(info.searchText).slice(0, 80), hidden].join('\t');
   });
   const res = spawnSync('fzf', [
-    '--with-nth=2..',
+    '--with-nth=2,3,4,5',
     '--delimiter=\t',
     '--prompt=pinned ▸ ',
     '--header=enter: resume  ·  ctrl-d: unpin  ·  esc: quit',
@@ -212,9 +277,28 @@ function fzfInteractive(pins) {
   resumeAndExit(pin);
 }
 
+// Precompute everything render()/search touch on disk (title, existence, meta line,
+// searchable text) ONCE per pin. Previously each of these hit the filesystem on every
+// keypress for every visible row — the source of the picker's lag. The transcript
+// content is folded into the search haystack so search reaches into the chat itself,
+// not just the title/note.
+function enrichPin(p) {
+  const sfp = session.sessionFilePath(p.cwd, p.id);
+  const info = session.readSessionInfo(sfp);
+  const name = info.customTitle || info.aiTitle || p.name || null;
+  const exists = fs.existsSync(sfp) || !!session.findAnySessionPath(p.id);
+  return {
+    ...p,
+    _name: name,
+    _exists: exists,
+    _meta: metaLine(p),
+    _search: [name || '', p.note || '', p.cwd || '', info.searchText || ''].join(' ').toLowerCase(),
+  };
+}
+
 function nodeTui(initialPins) {
   return new Promise((resolve) => {
-    let pins = [...initialPins];
+    let pins = initialPins.map(enrichPin);
     let cursor = -1;
     let selectedId = null;
     let inSearch = false;
@@ -226,11 +310,10 @@ function nodeTui(initialPins) {
 
     const getVisible = () => {
       if (!query) return pins;
-      const q = query.toLowerCase();
-      return pins.filter(p => {
-        const hay = [displayName(p) || '', p.note || '', p.cwd || ''].join(' ').toLowerCase();
-        return hay.includes(q);
-      });
+      // All terms must match (AND), each anywhere in the haystack — lets you narrow
+      // with a few remembered words ("stripe capture mobile") across title/note/content.
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      return pins.filter(p => terms.every(t => p._search.includes(t)));
     };
 
     const render = () => {
@@ -253,12 +336,11 @@ function nodeTui(initialPins) {
           const focused = i === cursor;
           const selected = p.id === selectedId;
           const prefix = focused ? c(C.cyan, '▸ ') : '  ';
-          const rawName = displayName(p) || '(unnamed)';
-          const exists = session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id);
-          const dot = selected ? (exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
+          const rawName = p._name || '(unnamed)';
+          const dot = selected ? (p._exists ? c(C.green, '●') : c(C.red, '✗')) : c(C.dim, '·');
           const name = focused ? c(C.bold, rawName) : rawName;
           const idStr = c(C.gray, p.id.slice(0, 8));
-          out += `${prefix}${dot} ${name} ${idStr}\x1b[K\n    ${c(C.dim, metaLine(p))}\x1b[K\n`;
+          out += `${prefix}${dot} ${name} ${idStr}\x1b[K\n    ${c(C.dim, p._meta)}\x1b[K\n`;
           if (p.note) out += `    ${c(C.cyan, '› ' + p.note)}\x1b[K\n`;
         });
       }
@@ -496,7 +578,7 @@ function cmdPrune() {
   const kept = [];
   const dropped = [];
   for (const p of data.pins) {
-    if (session.sessionExists(p.cwd, p.id) || session.findAnySessionFile(p.id)) kept.push(p);
+    if (session.sessionExists(p.cwd, p.id) || session.findAnySessionPath(p.id)) kept.push(p);
     else dropped.push(p);
   }
   data.pins = kept;

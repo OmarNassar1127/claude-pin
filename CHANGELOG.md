@@ -4,6 +4,22 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 — 2026-05-29
+
+### Fixed
+
+- **Re-pinning no longer wipes your note or name.** `/pin` (or `cpin pin`) on an already-pinned session used to overwrite `note`/`name` with empty values. It now only changes a field when you explicitly pass a new value, and reports `↺ already pinned` when nothing changed.
+- **Correct cwd resolution.** The project directory name is a lossy encoding of the path (every `/` becomes `-`, indistinguishable from a literal `-`), so paths like `~/Desktop/vloto-dashboard` were decoded wrongly and broke resume. The real `cwd` is now read from the transcript itself. Legacy pins with a bad cwd are self-healed on the next resume.
+
+### Added
+
+- **Content-aware search in the picker.** `/` search now matches against the chat content, not just name/note/cwd. Space-separate terms to narrow (all must match). Zero new dependencies — it reads the transcripts you already have.
+- **`/note` auto-pins.** Adding a note to an unpinned session now pins it first, then attaches the note, instead of erroring.
+
+### Changed
+
+- **Faster picker.** Title lookups, existence checks, and search text are now computed once per session on open instead of re-reading every transcript on every keypress — removes the lag with many pins. `cpin add` now reads only the most-recent N transcripts instead of every transcript in the window.
+
 ## 0.3.0 — 2026-05-24
 
 ### Added

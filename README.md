@@ -111,7 +111,7 @@ Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pin
 | `cpin: command not found` (slash command) | npm global bin not on PATH | `echo "export PATH=\"$(npm bin -g):$PATH\"" >> ~/.zshrc && source ~/.zshrc` |
 | `Cannot find module 'claude-pin'` | Install failed mid-way | Re-run `npm i -g claude-pin` |
 | `Permission denied` writing `~/.claude/skills/` | Pre-existing files | `cpin install --force` |
-| `Not pinned (xxx). Run /pin first` from `/note` | Note attempted before pin | Run `/pin` first, then `/note <text>` |
+| `/note` on an unpinned session | (none — it now auto-pins the session, then attaches the note) | No action needed |
 
 ---
 
@@ -155,7 +155,7 @@ Prints the current pin list inline. Equivalent to running `cpin list --plain`.
 
 ### `/note <text>`
 
-Sets (or clears, if empty) a free-text note on the **currently pinned** session. The note shows up as a `›` line under the pin in `/pins` and the `cpin` picker. Use it to record context that survives across weeks.
+Sets (or clears, if empty) a free-text note on the current session. If the session isn't pinned yet, `/note` **pins it automatically** before attaching the note — a note is useless if its transcript gets garbage-collected. The note shows up as a `›` line under the pin in `/pins` and the `cpin` picker. Use it to record context that survives across weeks.
 
 ```
 /note Waiting on legal reply about clause 4
@@ -220,7 +220,7 @@ Launch with `cpin` or `cpin list`.
 | `↑` / `↓` (or `k`/`j`) | Move focus through the list (▸ arrow indicator). |
 | `space` | Select / deselect the focused row. The selected row's dot turns green ●. |
 | `enter` | Resume the **selected** session. Does nothing if no selection. |
-| `/` | Enter search mode — type to filter by name/note/cwd. |
+| `/` | Enter search mode — type to filter. Matches across name, note, cwd, **and the chat content itself**; space-separate terms to narrow (all must match). |
 | `backspace` (in search) | Remove last char from filter. |
 | `enter` (in search) | Apply filter and navigate the filtered list. |
 | `esc` (in search) | Clear the filter and exit search mode. |
