@@ -4,6 +4,17 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.6.0 — 2026-05-29
+
+### Changed
+
+- **Picker redesigned to match `claude --resume`.** A title with your position, an always-on search box (just type — no `/` to enter search), and one entry per pin showing the name then a `time · branch · size` meta line (`✎` marks pins with a note). The git branch is read from the transcript and the size is the transcript file size. Only the focused row expands with its note + content preview, and the view scrolls with a `1 of 43` position counter.
+
+### Keybindings
+
+- Type anywhere to filter (search is always on). `↑`/`↓` (or `ctrl-p`/`ctrl-n`) move, `enter` resumes the focused row directly.
+- Unpin moved to **`ctrl-d`** and undo to **`ctrl-u`** (letters now go to the search box). `esc` clears the search or quits when empty; `ctrl-c` always quits. `q` and `/` are no longer special.
+
 ## 0.5.1 — 2026-05-29
 
 ### Changed
