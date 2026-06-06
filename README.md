@@ -100,7 +100,25 @@ cpin doctor
 ```
 Look for `cleanupPeriodDays: 3650` and the green check `transcripts will survive long enough for pinning to be useful.`
 
-**Step 4 — Confirm everything is wired up:**
+**Step 4 — (Optional) Offer auto-suggest on session end:**
+
+This is opt-in. Ask the user something like: *"Want claude-pin to nudge you to pin sessions that ran for more than 4 hours with 50+ messages? It hooks into Claude Code's Stop event and prints a one-line reminder when those sessions end."* If they say yes:
+
+```bash
+cpin install --with-auto-suggest
+```
+
+Verify:
+```bash
+grep -A2 suggest-pin ~/.claude/settings.json
+```
+Expect a Stop hook entry containing `"command": "cpin suggest-pin"`.
+
+Thresholds are tunable via `cpin config --min-messages N --min-duration-hours N --auto-suggest on|off`. Remove the hook later with `cpin install --no-auto-suggest`.
+
+Do **not** install the hook without asking — it modifies `~/.claude/settings.json` and changes session-end behavior.
+
+**Step 5 — Confirm everything is wired up:**
 
 Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pinned ...` line appears, setup is complete. If they get `cpin: command not found`, run `npm bin -g` to find the global npm bin and ensure it's on PATH.
 
@@ -112,6 +130,7 @@ Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pin
 | `Cannot find module 'claude-pin'` | Install failed mid-way | Re-run `npm i -g claude-pin` |
 | `Permission denied` writing `~/.claude/skills/` | Pre-existing files | `cpin install --force` |
 | `/note` on an unpinned session | (none — it now auto-pins the session, then attaches the note) | No action needed |
+| Auto-suggest nudge fires too often / never | Thresholds off for this user's workflow | `cpin config --min-messages N --min-duration-hours N` |
 
 ---
 
