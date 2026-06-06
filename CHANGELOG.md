@@ -4,6 +4,12 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.7.1 — 2026-05-29
+
+### Docs
+
+- README "For AI assistants" section now includes the opt-in auto-suggest step (Step 4) so LLM helpers reading the README know to offer `cpin install --with-auto-suggest` after asking the user. Also adds a troubleshooting row for tuning thresholds.
+
 ## 0.7.0 — 2026-05-29
 
 ### Added

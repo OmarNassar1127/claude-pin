@@ -1,7 +1,7 @@
 {
   "name": "claude-pin",
   "description": "Pin Claude Code sessions so they survive the resume window. Adds /claude-pin:pin, /claude-pin:unpin, /claude-pin:pins, /claude-pin:note and the cpin CLI for a picker that resumes pinned sessions directly by id.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": {
     "name": "Omar Nassar"
   }
