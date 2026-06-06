@@ -126,8 +126,9 @@ Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pin
 | `cpin` (terminal) | Interactive picker: ↑/↓ navigate, space select, enter resume, `/` search, `d` unpin. |
 | `cpin add` (terminal) | Retroactive pinning — picker of recent sessions across **all** your projects, toggle to pin/unpin. |
 | `cpin update` (terminal) | Self-update to the latest claude-pin from npm. |
+| Auto-suggest on session end (opt-in) | Nudges you to pin sessions over 4h with 50+ messages, the moment they end. Enable with `cpin install --with-auto-suggest`. Configure with `cpin config`. |
 | `cpin list --plain` | Static list for scripting. |
-| `cpin pin/unpin/note/add/update/prune/doctor/install/uninstall` | Full CLI surface. |
+| `cpin pin/unpin/note/add/update/prune/doctor/config/install/uninstall` | Full CLI surface. |
 
 ---
 
@@ -243,6 +244,37 @@ Launch with `cpin` or `cpin list`.
 The list stays compact: **one line per pin** (dot, name, `✎` if it has a note, age, short id). Only the **focused** row expands to show its full path, note, and a one-line preview of the opening message — so a long pin list stays scannable instead of becoming a wall of text. The view scrolls when there are more pins than fit, with a `3–12 of 47` counter in the header. A red `✗` instead of a dot means the transcript is gone (`cpin prune` to drop it).
 
 The picker enters the alternate screen buffer, hides your terminal cursor while open, and cleanly restores both on exit (including via SIGINT/SIGTERM). If [`fzf`](https://github.com/junegunn/fzf) is installed, an fzf-based picker is used instead.
+
+---
+
+## Auto-suggest on session end (opt-in)
+
+Long sessions are the ones you most want pinned, and also the easiest to forget to pin. The Stop hook handles that: when a Claude Code session ends, claude-pin checks the transcript and prints a single-line nudge if the session was substantial — by default, **50+ messages AND 4h+ from first to last activity**. Both thresholds must be met, so the prompt stays rare.
+
+```
+› cpin: long session (73 msgs over 5h12m) — /pin to keep this thread, or cpin config --auto-suggest off to silence
+```
+
+Already-pinned sessions and short ones are silent. The hook is opt-in to keep `cpin install` non-invasive:
+
+```bash
+cpin install --with-auto-suggest    # add the Stop hook
+cpin install --no-auto-suggest      # remove the Stop hook
+```
+
+It only touches a single Stop entry inside `~/.claude/settings.json` — other hooks (yours or other plugins') are preserved.
+
+### Tuning thresholds
+
+```bash
+cpin config                              # show current settings
+cpin config --min-messages 100           # quieter
+cpin config --min-duration-hours 2       # louder
+cpin config --auto-suggest off           # disable without removing the hook
+cpin config --reset                      # back to defaults (50 msgs, 4h)
+```
+
+Settings live alongside the pin store at `~/.claude/pinned-sessions.json`.
 
 ---
 

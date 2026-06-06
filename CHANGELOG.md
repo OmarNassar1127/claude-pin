@@ -4,6 +4,19 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.7.0 — 2026-05-29
+
+### Added
+
+- **Auto-suggest on session end.** A Stop hook that nudges you to pin sessions that meet a length threshold the moment they end. Defaults: 50+ messages **and** 4h+ duration (both required, so the prompt stays rare). Prints a one-line note to stderr — `› cpin: long session (73 msgs over 5h12m) — /pin to keep this thread`. Already-pinned and below-threshold sessions are silent.
+- **`cpin config`** — view or change auto-suggest thresholds. Flags: `--min-messages N`, `--min-duration-hours N`, `--auto-suggest on|off`, `--reset`. Settings live alongside the pin store in `~/.claude/pinned-sessions.json`.
+- **`cpin suggest-pin`** — internal command invoked by the Stop hook. Reads `{session_id, transcript_path}` JSON from stdin and decides whether to print the nudge. Safe to call by hand (silent on empty stdin).
+
+### Changed
+
+- **`cpin install`** now accepts `--with-auto-suggest` to install the Stop hook in `~/.claude/settings.json` (opt-in to keep `cpin install` non-invasive), and `--no-auto-suggest` to remove a previously installed hook. The install only touches the claude-pin entry — other Stop hooks (yours or other plugins') are preserved.
+- **`cpin uninstall`** now also removes the Stop hook entry.
+
 ## 0.6.1 — 2026-05-29
 
 ### Changed

@@ -173,6 +173,117 @@ function cmdNote(args) {
   }
 }
 
+const DEFAULT_AUTO_SUGGEST = { enabled: true, minMessages: 50, minDurationHours: 4 };
+
+function getAutoSuggestSettings() {
+  const data = store.load();
+  const a = (data.settings && data.settings.autoSuggest) || {};
+  return {
+    enabled: a.enabled !== false,
+    minMessages: typeof a.minMessages === 'number' ? a.minMessages : DEFAULT_AUTO_SUGGEST.minMessages,
+    minDurationHours: typeof a.minDurationHours === 'number' ? a.minDurationHours : DEFAULT_AUTO_SUGGEST.minDurationHours,
+  };
+}
+
+function formatDuration(ms) {
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours >= 1) return minutes ? `${hours}h${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
+}
+
+function cmdSuggestPin() {
+  // Invoked by Claude Code's Stop hook with JSON on stdin.
+  // Failure modes are silent: a noisy hook would interrupt every session end.
+  let input;
+  try {
+    const raw = fs.readFileSync(0, 'utf8').trim();
+    if (!raw) process.exit(0);
+    input = JSON.parse(raw);
+  } catch {
+    process.exit(0);
+  }
+  const sessionId = input.session_id || input.sessionId;
+  const transcriptPath = input.transcript_path || input.transcriptPath;
+  if (!sessionId || !UUID_RE.test(sessionId)) process.exit(0);
+
+  const cfg = getAutoSuggestSettings();
+  if (!cfg.enabled) process.exit(0);
+
+  // Already pinned? nothing to suggest.
+  const data = store.load();
+  if (data.pins.find(p => p.id === sessionId)) process.exit(0);
+
+  let statsPath = transcriptPath;
+  if (!statsPath || !fs.existsSync(statsPath)) {
+    const found = session.findAnySessionPath(sessionId);
+    if (!found) process.exit(0);
+    statsPath = found;
+  }
+  const stats = session.readSessionStats(statsPath);
+  if (stats.messageCount < cfg.minMessages) process.exit(0);
+  if (stats.durationMs < cfg.minDurationHours * 3600 * 1000) process.exit(0);
+
+  // Print to stderr so Claude Code shows it to the user without polluting transcripts.
+  const dur = formatDuration(stats.durationMs);
+  process.stderr.write(`\n${c(C.cyan, '› cpin:')} long session (${c(C.bold, stats.messageCount + ' msgs')} over ${c(C.bold, dur)}) — ${c(C.cyan, '/pin')} to keep this thread, or ${c(C.dim, 'cpin config --auto-suggest off')} to silence\n`);
+  process.exit(0);
+}
+
+function cmdConfig(args) {
+  const printCurrent = () => {
+    const cfg = getAutoSuggestSettings();
+    console.log(c(C.bold, 'claude-pin settings'));
+    console.log(`  autoSuggest.enabled:           ${cfg.enabled}`);
+    console.log(`  autoSuggest.minMessages:       ${cfg.minMessages}${cfg.minMessages === DEFAULT_AUTO_SUGGEST.minMessages ? c(C.dim, ' (default)') : ''}`);
+    console.log(`  autoSuggest.minDurationHours:  ${cfg.minDurationHours}${cfg.minDurationHours === DEFAULT_AUTO_SUGGEST.minDurationHours ? c(C.dim, ' (default)') : ''}`);
+  };
+
+  const flagKeys = ['min-messages', 'min-duration-hours', 'auto-suggest', 'reset'];
+  const setAnyFlag = flagKeys.some(k => args[k] !== undefined);
+
+  if (!setAnyFlag) {
+    printCurrent();
+    console.log('');
+    console.log(c(C.dim, '  change with:'));
+    console.log(c(C.dim, '    cpin config --min-messages 100'));
+    console.log(c(C.dim, '    cpin config --min-duration-hours 2'));
+    console.log(c(C.dim, '    cpin config --auto-suggest off'));
+    console.log(c(C.dim, '    cpin config --reset'));
+    return;
+  }
+
+  const data = store.load();
+  if (args.reset) {
+    delete data.settings;
+    store.save(data);
+    console.log(c(C.green, '✓') + ' settings reset to defaults');
+    printCurrent();
+    return;
+  }
+  if (!data.settings) data.settings = {};
+  if (!data.settings.autoSuggest) data.settings.autoSuggest = {};
+  const a = data.settings.autoSuggest;
+  if (args['min-messages'] !== undefined) {
+    const n = parseInt(args['min-messages'], 10);
+    if (isNaN(n) || n <= 0) { console.error(c(C.red, '--min-messages must be a positive integer')); process.exit(1); }
+    a.minMessages = n;
+  }
+  if (args['min-duration-hours'] !== undefined) {
+    const h = parseFloat(args['min-duration-hours']);
+    if (isNaN(h) || h <= 0) { console.error(c(C.red, '--min-duration-hours must be a positive number')); process.exit(1); }
+    a.minDurationHours = h;
+  }
+  if (args['auto-suggest'] !== undefined) {
+    const v = String(args['auto-suggest']).toLowerCase();
+    a.enabled = !(v === 'off' || v === 'false' || v === '0' || v === 'no');
+  }
+  store.save(data);
+  console.log(c(C.green, '✓') + ' settings updated');
+  printCurrent();
+}
+
 function cmdAdd(args) {
   const limit = parseInt(args.limit, 10) || 50;
   const daysBack = parseInt(args.since, 10) || 365;
@@ -762,6 +873,21 @@ function cmdInstall(args) {
     console.log(c(C.bold, '    cpin doctor --fix'));
   }
 
+  // Stop hook for auto-suggest. Off by default for plain `cpin install`; opt in
+  // with --with-auto-suggest, opt out of installed hook with --no-auto-suggest.
+  if (args['no-auto-suggest']) {
+    const r = settings.removeStopHook();
+    if (r.removed) console.log(c(C.gray, '·') + ' Stop hook removed');
+  } else if (args['with-auto-suggest']) {
+    const r = settings.installStopHook('cpin suggest-pin');
+    if (r.installed) console.log(c(C.green, '✓') + ' Stop hook installed — long sessions will be flagged on end');
+    else console.log(c(C.gray, '·') + ' Stop hook already present');
+    console.log(c(C.dim, '    tune with: cpin config --min-messages N --min-duration-hours H'));
+  } else {
+    console.log(c(C.dim, '  optional: pass --with-auto-suggest to install the Stop hook that nudges you'));
+    console.log(c(C.dim, '            to pin sessions longer than 4h with 50+ messages'));
+  }
+
   if (conflicts) process.exit(1);
   console.log(c(C.dim, '\n  Open any Claude Code session and try /pin'));
 }
@@ -778,6 +904,8 @@ function cmdUninstall() {
       console.log(`  ${c(C.yellow, '!')} /${n}  (not a symlink — not removing)`);
     }
   }
+  const r = settings.removeStopHook();
+  if (r.removed) console.log(`  ${c(C.green, '✓')} Stop hook removed (${r.removed} entr${r.removed === 1 ? 'y' : 'ies'})`);
 }
 
 function semverGreater(a, b) {
@@ -859,8 +987,9 @@ function help() {
   console.log(`${c(C.bold, 'cpin')} — pin Claude Code sessions so they survive the resume window.
 
 ${c(C.bold, 'Setup:')}
-  cpin install [--force]     Symlink /pin /unpin /pins into ~/.claude/skills
-  cpin uninstall             Remove the symlinks
+  cpin install [--force]     Symlink /pin /unpin /pins /note into ~/.claude/skills
+                             Pass --with-auto-suggest to also install the Stop hook
+  cpin uninstall             Remove the symlinks and the Stop hook
   cpin doctor [--fix]        Check setup; --fix bumps cleanupPeriodDays
   cpin update [--check]      Update to the latest claude-pin from npm
 
@@ -874,6 +1003,8 @@ ${c(C.bold, 'Usage:')}
   cpin prune                 Drop pins whose transcript is gone
   cpin export [--out FILE]   Print/write the pin store (backup)
   cpin import FILE [--replace] Merge pins from a backup (--replace overwrites)
+  cpin update [--check]      Update claude-pin from npm
+  cpin config [flags]        View/change settings (auto-suggest thresholds)
   cpin help                  This message
 `);
 }
@@ -889,6 +1020,8 @@ const cmds = {
   prune: cmdPrune,
   export: cmdExport, import: cmdImport,
   update: cmdUpdate, upgrade: cmdUpdate,
+  config: cmdConfig,
+  'suggest-pin': cmdSuggestPin,
   doctor: cmdDoctor,
   help, '--help': help, '-h': help,
 };
