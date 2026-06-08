@@ -4,6 +4,36 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.7.5 — 2026-05-29
+
+### Changed
+
+- **Picker hint line is now readable.** Was dim grey end-to-end ("hard to read" — fair). Now the keys (`↑/↓`, `enter`, `/`, `ctrl-d`, `q`, `ctrl-u`) pop in **cyan**, the labels (`navigate`, `resume`, etc.) render in normal text, and only the `·` separators stay dim. Visual hierarchy: keys first, what-they-do second, separators last. The `ctrl-u undo` slot still dims when no undo is available and lights yellow when one is.
+
+## 0.7.4 — 2026-05-29
+
+### Fixed
+
+- **`enter` inside `/` search now resumes directly** instead of just closing the search box. Previously you had to press `enter` once to exit search, then `enter` again to resume — two presses for one action. Now: type to filter, arrow to a row (or skip the arrow to grab the top match), press `enter` once, you're in. Matches the behavior the README already promised since 0.7.2 — code now does what the docs said.
+
+## 0.7.3 — 2026-05-29
+
+### Changed
+
+- **Picker focus indicator is now the dot itself, not a `▸` arrow.** The focused row's dot lights up **green ●** (or **red ✗** if its transcript is missing); every other healthy row shows a dim `·`. The previous "always green ● for every healthy row" made the focused row indistinguishable from the rest after 0.7.2 dropped the two-stage select. Single visual signal now, no leading arrow column — the list is one column narrower.
+- Expanded detail under the focused row (cwd/note/preview) re-indented to align cleanly with the new no-arrow layout.
+
+## 0.7.2 — 2026-05-29
+
+### Changed
+
+- **`cpin` picker resumes on a single `enter`.** Dropped the previous two-stage `space → enter` flow — focus a row with `↑/↓` and press `enter` to resume it directly. Faster for the common case, and the picker now matches the muscle memory you have for `claude --resume`'s built-in picker. Inside `/` search, `enter` resumes the focused row too (was previously "apply filter then enter again to resume").
+- **The dot is now purely a transcript-health indicator** — green `●` if the JSONL is on disk, red `✗` if not. Focus is shown by `▸` + bold name, which it already was. Removes the (now unused) green dot for "selected."
+
+### Removed
+
+- The `space` key binding inside `cpin` (was: select / deselect for the two-stage flow).
+
 ## 0.7.1 — 2026-05-29
 
 ### Docs

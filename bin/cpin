@@ -412,7 +412,6 @@ function nodeTui(initialPins) {
   return new Promise((resolve) => {
     let pins = initialPins.map(enrichPin);
     let cursor = -1;
-    let selectedId = null;
     let inSearch = false;
     let query = '';
     let cleaned = false;
@@ -448,15 +447,22 @@ function nodeTui(initialPins) {
       scrollTop = Math.min(scrollTop, Math.max(0, visible.length - vp));
       const end = Math.min(visible.length, scrollTop + vp);
 
-      // Stable hint legend — `ctrl-u: undo` is always shown (dim), lit yellow when an
-      // undo is available, so the line never jumps around as pins come and go.
-      const undoSeg = lastUnpinned ? c(C.yellow, 'ctrl-u: undo') : c(C.dim, 'ctrl-u: undo');
-      let base;
-      if (inSearch) base = 'type to filter · ↑/↓ move · enter: done · esc: clear';
-      else if (selectedId === null) base = '↑/↓ · space: select · /: search · ctrl-d: unpin · q: quit';
-      else base = 'enter: resume · space: deselect · /: search · ctrl-d · q';
-      let hintLine = c(C.dim, base);
-      if (!inSearch) hintLine += c(C.dim, ' · ') + undoSeg;
+      // Hint legend: keys pop in cyan, labels stay default-color (readable),
+      // only the `·` separators are dim. The `ctrl-u undo` slot is dim until an
+      // undo is available — then the key lights yellow.
+      const k = (s) => c(C.cyan, s);
+      const sep = c(C.dim, ' · ');
+      let segments;
+      if (inSearch) {
+        segments = [`type to filter`, `${k('↑/↓')} move`, `${k('enter')} resume`, `${k('esc')} clear`];
+      } else {
+        segments = [`${k('↑/↓')} navigate`, `${k('enter')} resume`, `${k('/')} search`, `${k('ctrl-d')} unpin`, `${k('q')} quit`];
+      }
+      let hintLine = segments.join(sep);
+      if (!inSearch) {
+        const undoSeg = lastUnpinned ? `${c(C.yellow, 'ctrl-u')} undo` : c(C.dim, 'ctrl-u undo');
+        hintLine += sep + undoSeg;
+      }
 
       let out = '\x1b[H';
       let header = c(C.bold, 'claude-pin') + '   ' + hintLine;
@@ -475,20 +481,21 @@ function nodeTui(initialPins) {
         for (let i = scrollTop; i < end; i++) {
           const p = visible[i];
           const focused = i === cursor;
-          const selected = p.id === selectedId;
-          const prefix = focused ? c(C.cyan, '▸ ') : '  ';
+          // No arrow — the dot IS the focus marker. Green ● on the focused row,
+          // dim · elsewhere. Red ✗ overrides on any row when the transcript is gone
+          // (health beats focus).
           let dot;
           if (!p._exists) dot = c(C.red, '✗');
-          else if (selected) dot = c(C.green, '●');
+          else if (focused) dot = c(C.green, '●');
           else dot = c(C.dim, '·');
           const nameStr = truncate(p._name || '(unnamed)', 50);
           const name = focused ? c(C.bold, nameStr) : nameStr;
           const noteMark = p.note ? c(C.cyan, ' ✎') : '';
-          out += `${prefix}${dot} ${name}${noteMark}  ${c(C.gray, '· ' + relTime(p.pinned_at))}  ${c(C.gray, p.id.slice(0, 8))}\x1b[K\n`;
+          out += `${dot} ${name}${noteMark}  ${c(C.gray, '· ' + relTime(p.pinned_at))}  ${c(C.gray, p.id.slice(0, 8))}\x1b[K\n`;
           if (focused) {
-            out += `      ${c(C.dim, p._meta)}\x1b[K\n`;
-            if (p.note) out += `      ${c(C.cyan, truncate('› ' + p.note, cols - 8))}\x1b[K\n`;
-            if (p._preview) out += `      ${c(C.gray, truncate('“' + p._preview + '”', cols - 8))}\x1b[K\n`;
+            out += `   ${c(C.dim, p._meta)}\x1b[K\n`;
+            if (p.note) out += `   ${c(C.cyan, truncate('› ' + p.note, cols - 5))}\x1b[K\n`;
+            if (p._preview) out += `   ${c(C.gray, truncate('“' + p._preview + '”', cols - 5))}\x1b[K\n`;
           }
         }
       }
@@ -515,7 +522,6 @@ function nodeTui(initialPins) {
       const index = pins.findIndex(p => p.id === target.id);
       store.remove(target.id);
       lastUnpinned = { pin: target, index };
-      if (selectedId === target.id) selectedId = null;
       pins = pins.filter(p => p.id !== target.id);
       const newVisible = getVisible();
       if (!pins.length) { render(); return; } // keep the picker open so ctrl-u can undo the last one
@@ -563,9 +569,17 @@ function nodeTui(initialPins) {
           render(); return;
         }
         if (k === '\r' || k === '\n') {
-          inSearch = false;
-          if (getVisible().length && cursor === -1) cursor = 0;
-          render(); return;
+          // Resume from inside search — no need to exit search first. Picks the
+          // focused row, or the top of the filtered list if the user typed and
+          // hit enter without arrowing (the common "narrow then go" case).
+          const v = getVisible();
+          if (!v.length) { inSearch = false; render(); return; }
+          const target = cursor !== -1 ? v[cursor] : v[0];
+          if (!target) { inSearch = false; render(); return; }
+          cleanup();
+          process.stdout.write('\n');
+          resumeAndExit(target);
+          return;
         }
         if (k === '\x7f' || k === '\x08') { query = query.slice(0, -1); cursor = -1; render(); return; }
         // Don't let an arrow's "[A"/"OB" tail leak into the query as literal chars.
@@ -587,19 +601,12 @@ function nodeTui(initialPins) {
         cursor = cursor === -1 ? 0 : Math.min(visible.length - 1, cursor + 1);
         render(); return;
       }
-      if (k === ' ') {
-        if (cursor === -1 || !visible[cursor]) return;
-        const focusedPin = visible[cursor];
-        selectedId = (selectedId === focusedPin.id) ? null : focusedPin.id;
-        render(); return;
-      }
       if (k === '\r' || k === '\n') {
-        if (selectedId === null) return;
-        const chosen = pins.find(p => p.id === selectedId);
-        if (!chosen) return;
+        // Resume the focused row directly — no two-stage select.
+        if (cursor === -1 || !visible[cursor]) return;
         cleanup();
         process.stdout.write('\n');
-        resumeAndExit(chosen);
+        resumeAndExit(visible[cursor]);
         return;
       }
       if (k === 'd' || k === 'x') { doUnpin(); return; }

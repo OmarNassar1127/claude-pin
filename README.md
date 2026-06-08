@@ -142,7 +142,7 @@ Tell the user to open a Claude Code session and type `/pin`. If a green `✓ pin
 | `/unpin` (slash command) | Unpin the current session. |
 | `/pins` (slash command) | List pinned sessions inline in the chat. |
 | `/note <text>` (slash command) | Attach a free-text note to the current pinned session. |
-| `cpin` (terminal) | Interactive picker: ↑/↓ navigate, space select, enter resume, `/` search, `d` unpin. |
+| `cpin` (terminal) | Interactive picker: ↑/↓ navigate (focused row's dot lights green ●), **enter resumes the focused row directly**, `/` search, `ctrl-d` unpin, `ctrl-u` undo. |
 | `cpin add` (terminal) | Retroactive pinning — picker of recent sessions across **all** your projects, toggle to pin/unpin. |
 | `cpin update` (terminal) | Self-update to the latest claude-pin from npm. |
 | Auto-suggest on session end (opt-in) | Nudges you to pin sessions over 4h with 50+ messages, the moment they end. Enable with `cpin install --with-auto-suggest`. Configure with `cpin config`. |
@@ -189,7 +189,7 @@ Sets (or clears, if empty) a free-text note on the current session. If the sessi
 ## `cpin` CLI
 
 ```
-cpin                       Interactive picker (↑↓ · space select · enter resume · / search · ctrl-d unpin · ctrl-u undo · q quit)
+cpin                       Interactive picker (↑↓ · enter resume · / search · ctrl-d unpin · ctrl-u undo · q quit)
 cpin list                  Same as above; `--plain` for static output
 cpin add                   Picker of recent sessions across all projects; space to toggle pin, enter to apply
 cpin pin [id] --name X     Pin a session (defaults to most recent in cwd)
@@ -249,18 +249,17 @@ Launch with `cpin` or `cpin list`.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k`/`j`) | Move focus through the list (▸ arrow indicator). |
-| `space` | Select / deselect the focused row. The selected row's dot turns green ●. |
-| `enter` | Resume the **selected** session. Does nothing if no selection. |
+| `↑` / `↓` (or `k`/`j`) | Move focus through the list. The **focused row's dot lights up green ●** (or red ✗ if its transcript is missing); other rows show a dim `·`. The focused row's name also goes bold and the row expands with `cwd · pinned · last` plus any note and a one-line preview. |
+| `enter` | **Resume the focused row immediately.** No two-stage select — focus + enter resumes. |
 | `/` | Enter search mode — type to filter. Matches across name, note, cwd, **and the chat content itself**; space-separate terms to narrow (all must match). |
 | `backspace` (in search) | Remove last char from filter. |
-| `enter` (in search) | Apply filter and navigate the filtered list. |
+| `enter` (in search) | Resume the focused row from inside search. |
 | `esc` (in search) | Clear the filter and exit search mode. |
 | `ctrl-d` | Unpin the focused row (also `d`/`x` outside search). |
 | `ctrl-u` | Undo the last unpin — restores it in place, notes included. Your safety net against a stray unpin. |
 | `q` / `esc` | Quit. |
 
-The list stays compact: **one line per pin** (dot, name, `✎` if it has a note, age, short id). Only the **focused** row expands to show its full path, note, and a one-line preview of the opening message — so a long pin list stays scannable instead of becoming a wall of text. The view scrolls when there are more pins than fit, with a `3–12 of 47` counter in the header. A red `✗` instead of a dot means the transcript is gone (`cpin prune` to drop it).
+The list stays compact: **one line per pin** (dot, name, `✎` if it has a note, age, short id). The **focused row alone** lights its dot green ●; other healthy rows show a dim `·`. Any row whose transcript is gone shows red ✗ — health beats focus there. Only the focused row expands underneath with its full path, note, and a one-line preview of the opening message, so a long pin list stays scannable instead of becoming a wall of text. The view scrolls when there are more pins than fit, with a `3–12 of 47` counter in the header.
 
 The picker enters the alternate screen buffer, hides your terminal cursor while open, and cleanly restores both on exit (including via SIGINT/SIGTERM). If [`fzf`](https://github.com/junegunn/fzf) is installed, an fzf-based picker is used instead.
 
