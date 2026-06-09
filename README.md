@@ -389,9 +389,11 @@ The pin store at `~/.claude/pinned-sessions.json` is left in place (delete manua
 
 - **No third-party dependencies.** Pure Node stdlib. Zero supply-chain surface.
 - **Slash command arguments are passed via single-quoted heredoc** + `--name-from-stdin` / `--text-from-stdin`. Bash heredocs with quoted delimiters don't expand the body, so injecting shell metacharacters in `/pin some "; rm -rf ~` is neutralized.
-- **All session ids are UUID-validated** before being passed to `spawn('claude', ['--resume', id], ...)`. Prevents flag-confusion attacks via tampered store data.
+- **All session ids are UUID-validated** before being passed to `spawn('claude', ['--resume', id], ...)`. Prevents flag-confusion attacks via tampered store data. No `spawn`/`spawnSync` call uses a shell — args are always passed as an array.
 - **`pin.cwd` existence is checked** before any `chdir`.
 - **Names and notes are sanitized** (control characters stripped, length-capped) on every write.
+- **Transcript-derived text is stripped of terminal escape sequences before display.** Titles, search text, and previews shown in the picker come from transcript content (which can include tool output, pasted text, or web-fetched text) — all C0/C1 control characters, including ESC, are removed before they reach your terminal, so a crafted transcript can't inject ANSI/terminal control sequences.
+- **Atomic writes.** The pin store and the changes to `~/.claude/settings.json` are written to a temp file and renamed, so a crash mid-write can't corrupt them.
 
 See the [SECURITY](#security-notes) section of the source for the full threat model.
 

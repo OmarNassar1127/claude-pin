@@ -4,6 +4,16 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.7.6 — 2026-05-29
+
+### Security
+
+- **Strip terminal escape sequences from transcript-derived text before display.** The picker shows session titles, search text, and previews read live from transcripts. Transcript content is untrusted (tool output, pasted text, web-fetched text) and can carry raw ANSI/terminal escape sequences. All C0/C1 control characters (including ESC `0x1b`) are now removed before these strings reach the terminal, closing a terminal-escape-injection vector. The existing `sanitize()` only covered names/notes at write time; this covers the live-read display path too.
+
+### Changed
+
+- **Atomic writes for the pin store and `~/.claude/settings.json`.** Both are now written to a pid-scoped temp file and `rename`d into place, so a crash mid-write can't leave a truncated/corrupt file. Matters most for `settings.json`, which is the user's shared Claude Code config, not just claude-pin's own file.
+
 ## 0.7.5 — 2026-05-29
 
 ### Changed

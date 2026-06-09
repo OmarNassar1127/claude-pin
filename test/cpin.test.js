@@ -120,3 +120,30 @@ test('import rejects entries with a non-UUID id', () => {
   const pins = fs.existsSync(storeFile) ? readStore(tmp).pins : [];
   assert.strictEqual(pins.length, 0);
 });
+
+test('stripControl removes ANSI escape sequences and control chars', () => {
+  // A title carrying a real ANSI color sequence + ESC byte must come out inert.
+  const malicious = '\x1b[31mDANGER\x1b[0m\x07\x00 clean';
+  const safe = session.stripControl(malicious);
+  assert.ok(!safe.includes('\x1b'), 'ESC byte must be gone');
+  assert.ok(!safe.includes('\x07'), 'BEL must be gone');
+  assert.ok(!safe.includes('\x00'), 'NUL must be gone');
+  // Printable remnants of the sequence are harmless and may remain.
+  assert.match(safe, /DANGER/);
+  assert.match(safe, /clean/);
+});
+
+test('readSessionInfo strips escape sequences from titles and search text', () => {
+  const { projDir, realCwd } = makeEnv();
+  const file = path.join(projDir, `${ID1}.jsonl`);
+  // ai-title and user content both carry an ESC sequence.
+  fs.writeFileSync(file, [
+    JSON.stringify({ type: 'user', cwd: realCwd, message: { role: 'user', content: '\x1b]0;pwned\x07hello' } }),
+    JSON.stringify({ type: 'ai-title', aiTitle: '\x1b[31mRed Title\x1b[0m' }),
+  ].join('\n') + '\n');
+  const info = session.readSessionInfo(file);
+  assert.ok(!info.aiTitle.includes('\x1b'), 'title must not carry ESC');
+  assert.ok(!info.searchText.includes('\x1b'), 'searchText must not carry ESC');
+  assert.ok(!info.searchText.includes('\x07'), 'searchText must not carry BEL');
+  assert.match(info.aiTitle, /Red Title/);
+});
