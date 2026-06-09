@@ -53,7 +53,9 @@ function assertValidId(id) {
 
 function sanitize(raw, max = 200) {
   if (typeof raw !== 'string') return null;
-  const cleaned = raw.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').trim();
+  // Same control-char policy as transcript-derived text (C0+C1 incl. newlines):
+  // a multi-line note must not be able to spoof extra rows in `cpin list --plain`.
+  const cleaned = session.stripControl(raw);
   if (!cleaned) return null;
   return cleaned.slice(0, max);
 }

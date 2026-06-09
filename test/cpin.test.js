@@ -133,6 +133,26 @@ test('stripControl removes ANSI escape sequences and control chars', () => {
   assert.match(safe, /clean/);
 });
 
+test('a multi-line note is flattened to one line (no list-row spoofing)', () => {
+  const { tmp, projDir, realCwd } = makeEnv();
+  writeSession(projDir, ID1, realCwd);
+  cpin(tmp, ['pin', ID1]);
+  cpin(tmp, ['note', ID1, '--text', 'real note\n● fake pin row 99999999\n  ~/spoofed · pinned 1s ago']);
+  const pin = readStore(tmp).pins.find(p => p.id === ID1);
+  assert.ok(!pin.note.includes('\n'), 'note must not contain newlines');
+  assert.match(pin.note, /real note ● fake pin row/);
+});
+
+test('user-supplied names are stripped of C1 control chars (e.g. single-byte CSI)', () => {
+  const { tmp, projDir, realCwd } = makeEnv();
+  writeSession(projDir, ID1, realCwd);
+  cpin(tmp, ['pin', ID1, '--name', 'safe\x9b31mname\x85end']);
+  const pin = readStore(tmp).pins.find(p => p.id === ID1);
+  assert.ok(!/[\x80-\x9f]/.test(pin.name), 'name must not carry C1 control chars');
+  assert.match(pin.name, /safe/);
+  assert.match(pin.name, /end/);
+});
+
 test('readSessionInfo strips escape sequences from titles and search text', () => {
   const { projDir, realCwd } = makeEnv();
   const file = path.join(projDir, `${ID1}.jsonl`);

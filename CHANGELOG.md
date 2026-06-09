@@ -4,6 +4,12 @@ All notable changes to claude-pin are documented here.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.7.7 — 2026-06-09
+
+### Security
+
+- **`sanitize()` (names/notes) now uses the same control-char policy as transcript-derived text.** Two gaps from a security audit of 0.7.6: user-supplied names and notes kept newlines (a multi-line note could spoof extra rows in `cpin list --plain` output) and the C1 range `0x80–0x9f` (single-byte CSI `0x9b` is still interpreted by some terminals). `sanitize()` now delegates to the same `stripControl` used for live transcript text — C0+C1 stripped, whitespace collapsed to one line. Low severity (the input is typed by the user themselves), fixed for consistency and defense in depth. Regression tests added for both.
+
 ## 0.7.6 — 2026-05-29
 
 ### Security
